@@ -1,0 +1,65 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Test / cache
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Virtualenvs
+.venv/
+venv/
+env/
+.env
+
+# Editors
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Local-only Claude Code state
+.claude/
+
+# Prior in-package git (locally preserved backup of pre-public history)
+causalrag/.git_backup_*/
+
+# CausalRoadmap project scaffolding
+.causalrag/cassettes/*
+!.causalrag/cassettes/.gitkeep
+.causalrag/history.jsonl
+.causalrag/llm.lock
+.causalrag/hardware.json
+.causalrag/env.lock
+
+# Per-run output (these are reproducible from study.causalrag.yaml)
+**/reports/*.html
+**/reports/*.md
+**/reports/*.pdf
+**/executive_synthesis.json
+**/executive_synthesis_error.txt
+
+# R bridge cache
+.Rhistory
+.RData
+.Ruserdata
+
+# Local scratch databases / datasets
+**/ignored
+**/*.duckdb
+**/*.duckdb.wal
+
+# Operating system / misc
+*.log
+.~lock.*

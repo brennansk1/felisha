@@ -1,0 +1,227 @@
+/* CausalRoadmap TUI — Textual stylesheet
+ *
+ * Ports the design bundle's CSS to Textual CSS. Variables are declared at
+ * the top of this file so any rule can read them. Colors approximate the
+ * design's oklch palette in sRGB hex.
+ */
+
+$bg:         #0c1422;
+$bg-soft:    #10182a;
+$surface:    #152034;
+$surface-hi: #1c2a42;
+$border:     #2a3a55;
+$border-hi:  #3b5078;
+$rule:       #24314a;
+$text:       #eef2f9;
+$text-soft:  #cfd6e4;
+$text-muted: #9aa3b5;
+$text-dim:   #6b7691;
+$text-faint: #4d5773;
+$accent:     #5fa8ff;
+$accent-hi:  #9ec2ff;
+$accent-soft:#3771bf;
+$success:    #7ed2e6;
+$warning:    #a3b6da;
+$danger:     #e08877;
+
+Screen {
+    background: $bg;
+    color: $text;
+    layers: base modal;
+}
+
+/* ── Top chrome ─────────────────────────────────────────────────────────── */
+TitleBar {
+    dock: top;
+    height: 1;
+    background: $bg-soft;
+    color: $text-muted;
+    padding: 0 2;
+    border-bottom: solid $rule;
+}
+
+/* ── Body — scrollable log container ───────────────────────────────────── */
+LogView {
+    background: $bg;
+    padding: 1 2 0 2;
+}
+
+LogView > VerticalScroll {
+    scrollbar-color: $border $bg-soft;
+    scrollbar-color-hover: $border-hi $bg-soft;
+    scrollbar-color-active: $accent $bg-soft;
+}
+
+LogLine {
+    height: auto;
+    padding: 0;
+    margin: 0;
+}
+
+CmdEcho {
+    height: auto;
+    background: $bg-soft;
+    padding: 0 1;
+    margin-top: 1;
+    border-left: thick $accent;
+}
+
+CardWidget {
+    height: auto;
+    background: $surface;
+    border: solid $border;
+    margin-top: 1;
+    padding: 0;
+}
+CardWidget > .card-header {
+    background: transparent;
+    color: $text-faint;
+    padding: 0 1;
+    border-bottom: dashed $rule;
+    height: 1;
+}
+CardWidget > .card-header .step {
+    color: $accent;
+    text-style: bold;
+}
+CardWidget > .card-header .meta {
+    color: $text-faint;
+    text-align: right;
+}
+CardWidget > .card-body {
+    padding: 1 1;
+}
+
+/* ── Bottom composer + slash menu ──────────────────────────────────────── */
+ComposerPanel {
+    dock: bottom;
+    height: auto;
+    margin: 0 2 1 2;
+}
+SlashMenu {
+    layer: modal;
+    background: $surface;
+    border: solid $border-hi;
+    width: 100%;
+    height: auto;
+    max-height: 12;
+    display: none;
+    padding: 0;
+}
+SlashMenu.-visible { display: block; }
+
+SlashMenu > ListView {
+    background: $surface;
+    height: auto;
+    max-height: 12;
+}
+SlashMenu ListItem {
+    padding: 0 1;
+    background: transparent;
+    color: $text-soft;
+}
+SlashMenu ListItem.--highlight {
+    background: $surface-hi;
+    color: $text;
+}
+SlashMenu ListItem .slash-cmd {
+    color: $accent;
+    width: 22;
+}
+SlashMenu ListItem .slash-desc {
+    color: $text-dim;
+}
+SlashMenu ListItem .slash-phase {
+    color: $text-faint;
+    text-align: right;
+}
+
+CmdInput {
+    background: $surface;
+    border: solid $border;
+    padding: 0 1;
+    height: 3;
+    color: $text;
+}
+CmdInput:focus {
+    border: solid $accent;
+}
+
+ComposerHints {
+    height: 1;
+    color: $text-faint;
+    padding: 0 1;
+}
+ComposerHints > Static.kbd { color: $text-muted; }
+ComposerHints > Static.stream-on  { color: $accent; }
+ComposerHints > Static.stream-off { color: $text-faint; }
+
+/* ── Status bar ────────────────────────────────────────────────────────── */
+StatusBar {
+    dock: bottom;
+    height: 1;
+    background: $bg-soft;
+    color: $text-muted;
+    padding: 0 2;
+    border-top: solid $rule;
+}
+StatusBar .key   { color: $text-faint; }
+StatusBar .value { color: $text-soft;  }
+StatusBar .guard-ok   { color: $success; }
+StatusBar .guard-warn { color: $warning; }
+StatusBar .guard-dim  { color: $text-faint; }
+
+/* ── Decision-point modal ──────────────────────────────────────────────── */
+DecisionModal {
+    align: center middle;
+    layer: modal;
+    background: $bg 70%;
+}
+DecisionModal > Vertical {
+    width: 80;
+    max-width: 90%;
+    height: auto;
+    background: $surface;
+    border: solid $border-hi;
+    padding: 1 2;
+}
+DecisionModal .modal-title {
+    color: $accent-hi;
+    text-style: bold;
+    margin-bottom: 1;
+}
+DecisionModal .modal-prose {
+    color: $text-soft;
+    margin-bottom: 1;
+}
+DecisionModal Horizontal {
+    align: center middle;
+    height: auto;
+    margin-top: 1;
+}
+DecisionModal Button {
+    margin: 0 1;
+}
+DecisionModal Button.primary {
+    background: $accent;
+    color: $bg;
+}
+
+/* ── Misc ──────────────────────────────────────────────────────────────── */
+.acc      { color: $accent-hi; }
+.ok       { color: $success; }
+.warn     { color: $warning; }
+.err      { color: $danger; }
+.dim      { color: $text-dim; }
+.muted    { color: $text-muted; }
+.faint    { color: $text-faint; }
+.bold     { text-style: bold; }
+
+Static.heading-title {
+    color: $text;
+    text-style: bold;
+}
+Static.heading-sub {
+    color: $text-muted;
+    text-style: italic;
+}
