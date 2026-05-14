@@ -58,3 +58,14 @@ else:  # pragma: no cover - executed only when uplift module exists
         "build_targeting_report",
         "policy_tree",
     ]
+
+# GeoLift-style geo-experiment incrementality (Sprint 7.4).
+try:  # pragma: no cover - optional sibling task
+    from causalrag.tasks.geolift import (  # noqa: F401
+        GeoLiftReport,
+        run_geolift,
+    )
+except ImportError:
+    pass
+else:  # pragma: no cover - executed only when geolift module exists
+    __all__ += ["GeoLiftReport", "run_geolift"]
