@@ -202,12 +202,45 @@ def _discovery_section(protocol: StudyProtocol) -> str:
     if protocol.discovery is None:
         return ""
     out = ["<h2>Phase 1 · Discovery</h2>"]
-    # Flag chips
-    chips = ""
-    for f in sorted(protocol.flags, key=lambda x: x.value):
-        chips += _chip(f.value, kind="acc")
-    if chips:
-        out.append(f"<p>{chips}</p>")
+    # Flag chips with hover descriptions
+    try:
+        from causalrag.core.flag_descriptions import describe_safe
+
+        flag_rows: list[str] = []
+        for f in sorted(protocol.flags, key=lambda x: x.value):
+            d = describe_safe(f)
+            tooltip = f"{d.summary} · {d.implication}"
+            flag_rows.append(
+                f"<span class='chip acc' title='{_e(tooltip)}'>{_e(f.value)}</span>"
+            )
+        if flag_rows:
+            out.append("<h3>Active data flags</h3>")
+            out.append(f"<p>{''.join(flag_rows)}</p>")
+            # Render full semantics in a collapsible block so the
+            # report stays self-explanatory for non-LLM readers.
+            out.append("<details><summary>What each flag means</summary><ul>")
+            for f in sorted(protocol.flags, key=lambda x: x.value):
+                d = describe_safe(f)
+                out.append(
+                    f"<li><code>{_e(f.value)}</code> — {_e(d.summary)} "
+                    f"<em>{_e(d.implication)}</em></li>"
+                )
+            out.append("</ul></details>")
+    except Exception:
+        # Fall back to the original chip rendering when
+        # flag_descriptions isn't importable.
+        chips = ""
+        for f in sorted(protocol.flags, key=lambda x: x.value):
+            chips += _chip(f.value, kind="acc")
+        if chips:
+            out.append(f"<p>{chips}</p>")
+    # Identification warnings from the brief.
+    if getattr(protocol.discovery, "identification_warnings", ()):
+        out.append("<h3>Identification warnings (expert brief)</h3>")
+        out.append("<ul>")
+        for w in protocol.discovery.identification_warnings:
+            out.append(f"<li class='warn'>{_e(w)}</li>")
+        out.append("</ul>")
     # Variable role table
     if protocol.discovery.columns:
         out.append("<h3>Variable specifications</h3>")
@@ -419,6 +452,34 @@ def _walks_section(protocol: StudyProtocol) -> str:
 
         if walk.q8_interpretation:
             out.append(f"<div class='k'>Step 8</div><div class='v serif'>{_e(walk.q8_interpretation)}</div>")
+
+        # Surface every sensitivity panel by name — keeps the report
+        # transparent about which tests were actually run vs which were
+        # skipped due to estimator-path or missing optional deps.
+        diag_for_panels = diag if isinstance(diag, dict) else {}
+        panel_chips: list[str] = []
+        for panel_name in (
+            "e_value", "sensemakr", "tipping_point", "refutation_summary",
+            "anomaly_audit", "rosenbaum", "manski", "ovb_chernozhukov",
+            "negative_control",
+        ):
+            panel_data = diag_for_panels.get(panel_name)
+            if isinstance(panel_data, dict):
+                available = panel_data.get("available", True)
+                state = "ran" if available else "skipped"
+            elif panel_data is None:
+                state = "n/a"
+            else:
+                state = "ran"
+            css = "ok" if state == "ran" else ("dim" if state == "skipped" else "muted")
+            panel_chips.append(
+                f"<span class='chip {css}'>{_e(panel_name)} · {state}</span>"
+            )
+        if panel_chips:
+            out.append(
+                "<div class='k'>sensitivity panels</div>"
+                f"<div class='v'>{''.join(panel_chips)}</div>"
+            )
 
         if walk.sensitivity_verdict:
             color_class = {

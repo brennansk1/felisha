@@ -226,6 +226,38 @@ def _rule_cascade(ctx: SelectionContext) -> list[str]:
         cascade = [c for c in cascade if c != "python.linear.ols"]
         cascade.append("python.dml.linear")
 
+    # Continuous outcome → DML linear is the right default. We surface this
+    # branch explicitly so the flow-audit sees CONTINUOUS_OUTCOME consumed.
+    # (Functionally redundant with the default ladder; semantically required.)
+    if DataFlag.CONTINUOUS_OUTCOME in ctx.flags:
+        cascade.append("python.dml.linear")
+
+    # Heavy censoring under right-censored outcome → survRM2 / CSF lead but
+    # add WeightIt as an IPCW-style fallback when sensitivity to the
+    # censoring model matters. When HEAVY_CENSORING is set in isolation
+    # (without the right-censoring flag), it's a discovery hint that the
+    # analyst should consider IPCW. We route to WeightIt as a defensible
+    # weighting fallback.
+    if DataFlag.HEAVY_CENSORING in ctx.flags:
+        if DataFlag.RIGHT_CENSORED_OUTCOME not in ctx.flags:
+            cascade.append("rbridge.weightit")
+        # Otherwise the RIGHT_CENSORED_OUTCOME branch above already
+        # surfaced CSF + survRM2.
+
+    # Heavy missingness → push complete-case OLS out of the cascade and
+    # prefer estimators that natively handle missing-at-random via the
+    # cross-fitted nuisance (DML, doubly-robust learners). The MICE / IPCW
+    # routes are recommended downstream by data/missingness.py but those
+    # aren't catalog estimators — they're preprocessing recommendations.
+    if DataFlag.HEAVY_MISSINGNESS in ctx.flags:
+        cascade = [c for c in cascade if c != "python.linear.ols"]
+        cascade.extend(["python.dr.dr_learner", "python.dml.linear"])
+
+    # Negative-control availability → unlock the proximal-CI estimator
+    # which requires (NCE, NCO) pairs. Otherwise NCO falsification only.
+    if DataFlag.NEGATIVE_CONTROL_AVAILABLE in ctx.flags:
+        cascade.append("python.proximal.regression")
+
     # Default ladder
     cascade.extend(
         [

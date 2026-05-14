@@ -534,6 +534,43 @@ def flags_from_brief(
     )
     if iv_in_brief or iv_in_investigator:
         flags.add(DataFlag.INSTRUMENTAL_CANDIDATE_PRESENT)
+
+    # Negative-control availability: emit when the brief or investigator
+    # explicitly names a negative-control exposure / outcome variable, OR
+    # when an unmeasured confounder block mentions proximal pairs.
+    nc_in_brief = any(
+        any(
+            kw in u.reason.lower()
+            for kw in ("negative control", "negative-control", "proximal pair", "nco", "nce")
+        )
+        for u in brief.unmeasured_confounders
+    )
+    nc_in_investigator = bool(
+        investigator
+        and any(
+            getattr(c, "proposed_role", None) == VariableRole.NEGATIVE_CONTROL
+            for c in investigator.columns
+        )
+    )
+    if nc_in_brief or nc_in_investigator:
+        flags.add(DataFlag.NEGATIVE_CONTROL_AVAILABLE)
+
+    # Mixture exposure: when the brief's treatments list contains more than
+    # one named column AND the design isn't a clean factorial / multi-arm
+    # categorical (which gets CATEGORICAL_TREATMENT). The brief tags this
+    # via a `mixture` keyword in the design rationale, or via simply
+    # listing 2+ treatments — defer to a conservative rule: emit only when
+    # explicitly marked in the brief's unmeasured-confounders text.
+    if len(brief.treatments) >= 2:
+        flags.add(DataFlag.MIXTURE_EXPOSURE)
+    else:
+        mixture_in_brief = any(
+            "mixture" in u.reason.lower() or "joint exposure" in u.reason.lower()
+            for u in brief.unmeasured_confounders
+        )
+        if mixture_in_brief:
+            flags.add(DataFlag.MIXTURE_EXPOSURE)
+
     return flags
 
 

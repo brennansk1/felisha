@@ -557,6 +557,50 @@ def _build_synthesis_prompt(
         parts.append("## Domain brief (used earlier in the pipeline)")
         parts.append(protocol.discovery.domain_brief[:1500])
 
+    # Flags + semantics so the LLM knows what each tag means.
+    if protocol.flags:
+        try:
+            from causalrag.core.flag_descriptions import render_flags_for_prompt
+
+            parts.append("")
+            parts.append("## Active data flags (with semantic meaning)")
+            parts.append(render_flags_for_prompt(set(protocol.flags)))
+        except Exception:
+            pass
+
+    # Identification warnings the domain expert flagged at discovery
+    # time. These belong in the overall_caveats of the synthesis.
+    if (
+        protocol.discovery is not None
+        and getattr(protocol.discovery, "identification_warnings", ())
+    ):
+        parts.append("")
+        parts.append("## Identification warnings from the domain expert")
+        for w in protocol.discovery.identification_warnings:
+            parts.append(f"  - {w}")
+
+    # Sensitivity panels available — let the LLM reference them by name
+    # in the caveats / quantified_effect fields. Reading the runtime
+    # dashboard for any one walk gives us the canonical panel set;
+    # we list them inline so the prompt is self-contained.
+    parts.append("")
+    parts.append("## Sensitivity panels surveyed per experiment")
+    parts.append(
+        "  - **e_value** (Ding-VanderWeele) — confounder-strength threshold\n"
+        "  - **sensemakr** (Cinelli-Hazlett) — partial-R² robustness value (RV)\n"
+        "  - **tipping_point** (tipr) — confounder SMD that flips significance\n"
+        "  - **refutation_summary** — placebo / RCC / subset-bootstrap pass count\n"
+        "  - **anomaly_audit** — implausible-magnitude / CI-too-wide flags\n"
+        "  - **rosenbaum** Γ (Zhao 2019) — for matching-based estimators\n"
+        "  - **manski** bounds — assumption-free identification ranges\n"
+        "  - **ovb_chernozhukov** — non-linear omitted-variable bias\n"
+        "  - **negative_control** — falsification on a known-null outcome"
+    )
+    parts.append(
+        "Reference these panels by name (e.g., 'the sensemakr RV is …') "
+        "in the per-finding caveats when relevant. Do not invent panels."
+    )
+
     parts.append("")
     parts.append("## Completed experiments")
     flags = frozenset(protocol.flags)

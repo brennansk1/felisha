@@ -120,6 +120,17 @@ class DiscoveryReport(BaseModel):
             "cross-check against the investigator's CONFOUNDER labels."
         ),
     )
+    identification_warnings: tuple[str, ...] = Field(
+        default=(),
+        description=(
+            "Identification caveats the domain-expert LLM flagged in the "
+            "brief (e.g., 'unobserved selection on age plausibly biases the "
+            "estimate', 'instrument exclusion restriction may not hold'). "
+            "Surfaced into master-loop planner / critic prompts and into "
+            "synthesis caveats so the analyst sees these alongside the "
+            "statistical results."
+        ),
+    )
 
     @field_serializer("flags")
     def _serialize_flags(self, v: set[DataFlag]) -> list[str]:

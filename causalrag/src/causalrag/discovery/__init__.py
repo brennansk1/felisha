@@ -64,12 +64,19 @@ class DiscoveryResult:
     markov_boundaries: tuple[dict[str, Any], ...] = ()
 
     def to_report(self) -> DiscoveryReport:
+        # Surface the brief's identification_warnings so downstream
+        # consumers (master loop prompts, synthesis caveats, HTML report)
+        # see them on the persisted DiscoveryReport.
+        warnings: tuple[str, ...] = ()
+        if self.expert is not None:
+            warnings = tuple(getattr(self.expert, "identification_warnings", []) or [])
         return DiscoveryReport(
             columns=self.columns,
             flags=self.flags,
             domain_brief=self.expert.domain_summary if self.expert else None,
             candidate_graphs=self.candidate_graphs,
             markov_boundaries=self.markov_boundaries,
+            identification_warnings=warnings,
         )
 
 

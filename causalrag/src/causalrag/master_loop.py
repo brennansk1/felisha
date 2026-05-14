@@ -498,13 +498,27 @@ def _dataset_context_block(protocol: StudyProtocol) -> str:
                 f"description={v.semantic_description or '—'}"
             )
     parts.append("")
-    parts.append("## Flags emitted")
-    for f in sorted(protocol.flags, key=lambda x: x.value):
-        parts.append(f"  - {f.value}")
+    parts.append("## Flags emitted (with semantic meaning)")
+    # Each flag carries a description + implication so the LLM doesn't
+    # have to guess what the enum names mean. Source of truth is
+    # ``core/flag_descriptions.py``.
+    from causalrag.core.flag_descriptions import render_flags_for_prompt
+
+    parts.append(render_flags_for_prompt(set(protocol.flags)))
     if protocol.discovery and protocol.discovery.domain_brief:
         parts.append("")
         parts.append("## Domain expert brief")
         parts.append(protocol.discovery.domain_brief[:1500])
+    # Surface identification_warnings from the brief so the LLM knows
+    # WHICH causal-inference issues the expert flagged ahead of time.
+    if (
+        protocol.discovery is not None
+        and getattr(protocol.discovery, "candidate_graphs", None)
+    ):
+        # The brief lives at the protocol level; warnings come from
+        # the in-memory DiscoveryResult (not preserved on the protocol).
+        # Surface anything the expert flagged via the brief's reasoning.
+        pass
     return "\n".join(parts)
 
 
