@@ -1014,6 +1014,9 @@ def _run_one_experiment(
 
     # Sensitivity — use the new evalue_for_estimator helper that picks
     # the correct scale based on the estimator and outcome dtype.
+    # For continuous outcomes the helper expects a pre-standardized
+    # (Cohen's d) magnitude; we standardize in place by dividing by the
+    # outcome's empirical SD so the helper sees a sensible scale.
     outcome_dtype = _outcome_dtype_for(protocol, candidate.outcome)
     baseline_risk: float | None = None
     if outcome_dtype == "binary" and candidate.outcome in df.columns:
@@ -1022,13 +1025,38 @@ def _run_one_experiment(
         except Exception:
             baseline_risk = None
 
+    # For continuous outcomes, pre-standardize the result so the
+    # evalue_for_estimator helper sees a defensible magnitude
+    # (otherwise raw $-valued point estimates are treated as Cohen's d
+    # and trigger the "unknown" path, which collapses the verdict).
+    result_for_sensitivity = result
+    if outcome_dtype == "continuous" and candidate.outcome in df.columns:
+        try:
+            y_sd = float(df[candidate.outcome].std(ddof=1) or 1.0)
+            if y_sd > 0 and y_sd != 1.0:
+                from causalrag.core.result import EstimationResult as _ER
+
+                result_for_sensitivity = _ER(
+                    estimator_id=result.estimator_id,
+                    estimand_class=result.estimand_class,
+                    point_estimate=result.point_estimate / y_sd,
+                    se=(result.se / y_sd) if result.se is not None else None,
+                    ci_low=(result.ci_low / y_sd) if result.ci_low is not None else None,
+                    ci_high=(result.ci_high / y_sd) if result.ci_high is not None else None,
+                    p_value=result.p_value,
+                    n_used=result.n_used,
+                    diagnostics=result.diagnostics,
+                )
+        except Exception:
+            result_for_sensitivity = result
+
     verdict_color = "unknown"
     sensitivity_rationale = ""
     ev: Any = None
     sm: Any = None
     try:
         ev = evalue_for_estimator(
-            result, outcome_dtype=outcome_dtype, baseline_risk=baseline_risk
+            result_for_sensitivity, outcome_dtype=outcome_dtype, baseline_risk=baseline_risk
         )
         confounders_for_sm = tuple(
             v.name
