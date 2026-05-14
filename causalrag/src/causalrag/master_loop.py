@@ -916,9 +916,39 @@ def _run_one_experiment(
         walk.failure_reason = "invalid candidate (missing T/Y/estimand)"
         return walk, {}, False
 
+    # Tolerant estimand parser — LLMs sometimes return composite labels
+    # like "NDE/NIE" or "ATE_or_CATE". Try a sequence of fallbacks:
+    # (1) exact match, (2) first segment before any separator,
+    # (3) explicit aliases for common slips.
+    raw_class = (candidate.estimand_class or "").upper().strip()
+    klass: EstimandClass | None = None
     try:
-        klass = EstimandClass(candidate.estimand_class.upper())
+        klass = EstimandClass(raw_class)
     except ValueError:
+        # Aliases the LLM might emit
+        aliases = {
+            "NDE/NIE": EstimandClass.NDE,
+            "NIE/NDE": EstimandClass.NIE,
+            "DOSE_RESPONSE": EstimandClass.MODIFIED_TREATMENT_POLICY,
+            "MTP": EstimandClass.MODIFIED_TREATMENT_POLICY,
+            "RMST": EstimandClass.RMST_CONTRAST,
+            "RMST CONTRAST": EstimandClass.RMST_CONTRAST,
+            "CATE/ATT": EstimandClass.CATE,
+            "ATE OR CATE": EstimandClass.ATE,
+        }
+        if raw_class in aliases:
+            klass = aliases[raw_class]
+        else:
+            # Try the first segment before / or _ or whitespace
+            for sep in ("/", "|", " or ", " "):
+                if sep in raw_class:
+                    head = raw_class.split(sep, 1)[0].strip()
+                    try:
+                        klass = EstimandClass(head)
+                        break
+                    except ValueError:
+                        continue
+    if klass is None:
         walk.failure_reason = f"unknown estimand class: {candidate.estimand_class}"
         return walk, {}, False
 
