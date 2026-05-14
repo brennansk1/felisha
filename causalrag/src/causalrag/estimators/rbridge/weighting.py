@@ -67,11 +67,17 @@ class WeightItEstimator:
         confounders: tuple[str, ...],
         modifiers: tuple[str, ...] = (),
         *,
-        method: str = "glm",
+        method: str = "ebal",
         estimand: str = "ATE",
         stabilize: bool = True,
         trim_quantile: float | None = 0.99,
     ) -> None:
+        # Default method bumped from "glm" → "ebal" (entropy balancing) per
+        # Zhao 2017 *Entropy Balancing Is Doubly Robust* (Journal of Causal
+        # Inference). EBAL exactly balances the specified moments and is
+        # doubly robust when the outcome model is correctly specified —
+        # strictly stronger guarantees than logistic-regression propensity
+        # weights. "glm" remains available via explicit `method="glm"`.
         if method not in METHOD_NAMES:
             raise ValueError(f"method must be one of {METHOD_NAMES}; got {method!r}")
         if estimand not in ESTIMAND_NAMES:

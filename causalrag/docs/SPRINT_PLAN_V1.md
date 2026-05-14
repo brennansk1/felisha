@@ -72,6 +72,8 @@ Goal: close the largest gaps against the modern consensus.
 | 2.5 | `estimators/python/conformal_ite.py` | Lei-Candès weighted conformal + Jonkers CCT-learner 2024 + Alaa-Ahmad-van der Laan conformal meta-learners (NeurIPS 2023). |
 | 2.6 | `sensitivity/dashboard.py` | sensemakr contour, Chernozhukov-Cinelli-Newey OVB (via DoWhy 0.12), Rosenbaum Γ for matching runs, Manski bounds. |
 | 2.7 | `estimators/select.py` | Adopt **CausalTune `energy_score` / ERUPT** as the default cross-validation metric for ATE / policy-value selection. |
+| **2.8** | `identify/autobounds_bridge.py` | **NEW — Duarte autobounds partial-identification engine (JASA 2024).** When DoWhy reports non-identifiable and both T and Y are discrete (≤ ~10 categories), invoke `autobounds` to return informative bounds rather than refusing. New flag `POINT_ID_FAILED_DISCRETE` routes here. Cap DAG size at 10 nodes for v1.0. The data-fusion capability (observational + experimental + prior-study summaries) is deferred to v1.1. |
+| **2.9** | `estimators/rbridge/weighting.py` | **NEW (default flip).** Set entropy balancing (`method="ebal"`) as the WeightIt default per Zhao 2017 (entropy balancing is doubly robust). Update the method card. Zero new code beyond the one-line default change + a citation paragraph. |
 
 **"Which DiD when" decision tree** (consensus from Roth-Sant'Anna 2025
 Practitioner's Guide):
@@ -155,6 +157,8 @@ Goal: the TUI passes the "this looks like a real research workbench" bar.
 | 6.4 | `identify/transportability.py` | Bareinboim-Pearl transportability for `TARGET_POPULATION_DIFFERS`. |
 | 6.5 | `estimators/python/proximal.py` | Liu-Tchetgen-Tchetgen 2024 proximal CI two-stage regression when `PROXIMAL_PAIR_AVAILABLE`. |
 | 6.6 | `estimators/python/frontdoor.py` | Front-door estimation via g-formula + bootstrap CI. |
+| **6.7** | `sensitivity/dashboard.py` | **NEW — Zhao 2019 sensitivity value (JASA).** Add a `zhao_sensitivity_value` panel alongside E-value and sensemakr RV. Returns the single Γ threshold at which the matched-pair inference becomes inconclusive. Compute only when the estimator path was matching (`rbridge.matchit`). Asymptotic-normal CI for Γ itself. Skip the design-sensitivity-power piece (deferred to v1.1). |
+| **6.8** | `identify/mr_bridge.py` | **NEW (v1.1 candidate, behind `MENDELIAN_RANDOMIZATION` flag).** MR-RAPS / GRAPPLE bridge for Mendelian randomization with horizontal-pleiotropy handling. GWAS-summary-statistics ingestion path is a separate ticket. Trigger: first clinical / epi user request. |
 
 ---
 
@@ -228,6 +232,20 @@ expands the **graph language** itself.
 | 8.3 | `llm/hardware_tiers.py` | Re-benched T0–T5 tier map for Qwen3-Thinking, DeepSeek-R1-Distill, GLM-4-32B-0414, Phi-4, Mistral-Small-3, Gemma 3, Llama 3.3 70B. CI re-benches on model release. |
 | 8.4 | `llm/multi_agent.py` | Multi-agent debate (planner ↔ skeptic ↔ statistician) behind `--paranoid`. 3× tokens; gated. |
 | 8.5 | `llm/cache.py` | Three-layer cache — engine prefix-KV-cache, semantic cache on `(prompt_template, hash(inputs))`, existing cassette replay with model-digest checks. |
+
+---
+
+## Sprint 9.5 — End-to-end flow audit (P0 final gate)
+
+| Ticket | Component | Scope |
+|---|---|---|
+| **9.5.1** | `audits/end_to_end_flow.py` | **End-to-end flag/method routing audit.** Walk every discovery output, every emitted `DataFlag`, every detector, every estimator, every sensitivity panel, every reporting hook. Build a directed graph `discovery_signal → flag → router → estimator/diagnostic → sensitivity → synthesis`. For every node in that graph, confirm at least one inbound producer and one outbound consumer (no orphaned producers, no orphaned consumers). Surface a `FlowAuditReport` per CI run that lists: (a) flags emitted by some detector but consumed by zero rules, (b) flags consumed by some rule but emitted by zero detector, (c) estimators registered in the catalog but not reachable from any rule path, (d) sensitivity panels in the dashboard not surfaced in any report path, (e) discovery brief fields (mediators, instruments, unmeasured confounders, negative controls, target population) that are not routed into the master loop / Q5 / estimator selection. |
+| **9.5.2** | `audits/method_coverage.py` | **Method-coverage report.** For each (estimand class × flag combination) the pipeline could plausibly encounter, list the estimator(s) and sensitivity tests routed to it. Render a sparse matrix; cells with zero coverage are filed as v1.1 tickets. |
+| **9.5.3** | `audits/island_detector.py` | **Island detector.** Static graph analysis identifies modules / functions that have no inbound caller in the runtime path of `/auto`. Surfaces dead code, partially-wired features, and "implemented but not invoked" gaps. |
+
+**Exit criteria:** every flag the discovery layer can emit has at least one estimator or diagnostic route. Every catalog estimator is reachable from the rule cascade for at least one flag combination. Every brief field (mediator / instrument / negative control / target-population indicator) is consumed somewhere downstream. Every sensitivity panel ends up in the executive synthesis prompt and the HTML report. The audit runs in CI and fails the build on regressions.
+
+This sprint is the **v1.0 ship gate** — no release without a clean flow audit.
 
 ---
 
