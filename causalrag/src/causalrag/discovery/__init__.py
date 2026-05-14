@@ -7,11 +7,14 @@ expert brief) lands in Week 3.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
+
+logger = logging.getLogger("causalrag.discovery")
 
 from causalrag.core.flags import DataFlag
 from causalrag.core.protocol import DiscoveryReport
@@ -55,6 +58,10 @@ class DiscoveryResult:
     columns: tuple[VariableSpec, ...]
     source_describe: dict[str, Any]
     research_question: str | None
+    # Markov-boundary reports per likely target (treatment + outcome).
+    # Each entry: {"target": name, "mb": [cols], "backend": "...",
+    # "disagreement_with_investigator": [cols]}. Empty when no MB pass ran.
+    markov_boundaries: tuple[dict[str, Any], ...] = ()
 
     def to_report(self) -> DiscoveryReport:
         return DiscoveryReport(
@@ -62,6 +69,7 @@ class DiscoveryResult:
             flags=self.flags,
             domain_brief=self.expert.domain_summary if self.expert else None,
             candidate_graphs=self.candidate_graphs,
+            markov_boundaries=self.markov_boundaries,
         )
 
 
@@ -156,6 +164,77 @@ def run_discovery(
 
         flags |= flags_from_brief(expert_brief, investigator=investigator_report)
 
+    # ── Markov-boundary cross-check ─────────────────────────────────
+    # Statistical answer to "which columns are in the predictive
+    # neighbourhood of the proposed treatment / outcome?". When the
+    # investigator labeled most variables CONFOUNDER (the Adult Census
+    # bug), the MB pass disagrees in ways the master loop can act on.
+    markov_boundaries: list[dict[str, Any]] = []
+    from causalrag.core.roles import VariableRole
+
+    investigator_confounders = {
+        v.name for v in columns if v.role is VariableRole.CONFOUNDER
+    }
+    mb_targets: list[str] = []
+    if outcome and outcome in df.columns:
+        mb_targets.append(outcome)
+    if treatment and treatment in df.columns and treatment != outcome:
+        mb_targets.append(treatment)
+    if mb_targets:
+        try:
+            from causalrag.discovery.markov_boundary import (
+                discover_markov_boundary,
+            )
+
+            for tgt in mb_targets:
+                try:
+                    report = discover_markov_boundary(df, target=tgt)
+                except Exception as e:
+                    markov_boundaries.append(
+                        {
+                            "target": tgt,
+                            "mb": [],
+                            "backend": "none",
+                            "method": "iamb",
+                            "n": 0,
+                            "test": "n/a",
+                            "notes": [
+                                f"MB discovery failed: {type(e).__name__}: {e}"
+                            ],
+                            "disagreement_with_investigator": [],
+                            "agreement_with_investigator": [],
+                        }
+                    )
+                    continue
+                mb_set = set(report.mb)
+                # Don't count T / Y / themselves as "missing" from MB
+                exclude_from_diff = {tgt, treatment, outcome} - {None}
+                in_mb_not_inv = sorted(mb_set - investigator_confounders - exclude_from_diff)
+                in_inv_not_mb = sorted(
+                    investigator_confounders - mb_set - exclude_from_diff
+                )
+                markov_boundaries.append(
+                    {
+                        "target": tgt,
+                        "mb": report.mb,
+                        "backend": report.backend,
+                        "method": report.method,
+                        "n": report.n,
+                        "test": report.test,
+                        "notes": report.notes,
+                        "disagreement_with_investigator": {
+                            "stats_says_in_mb_investigator_didnt_label_confounder": in_mb_not_inv,
+                            "investigator_called_confounder_stats_dropped": in_inv_not_mb,
+                        },
+                        "agreement_with_investigator": sorted(
+                            mb_set & investigator_confounders
+                        ),
+                    }
+                )
+        except Exception as e:
+            # Whole-feature failure (import error etc.) — log and continue.
+            logger.warning("Markov-boundary phase skipped: %s", e)
+
     return DiscoveryResult(
         dataframe=df,
         profile=profile,
@@ -168,6 +247,7 @@ def run_discovery(
         columns=columns,
         source_describe=source_describe,
         research_question=research_question,
+        markov_boundaries=tuple(markov_boundaries),
     )
 
 

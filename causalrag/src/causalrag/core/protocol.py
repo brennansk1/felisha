@@ -110,6 +110,16 @@ class DiscoveryReport(BaseModel):
     domain_brief: str | None = None
     candidate_graphs: tuple[CausalGraph, ...] = ()
     flags: set[DataFlag] = Field(default_factory=set)
+    markov_boundaries: tuple[dict[str, Any], ...] = Field(
+        default=(),
+        description=(
+            "Per-target Markov-boundary reports from bnlearn IAMB (or a "
+            "Python fallback). Each entry: target, mb (columns), backend, "
+            "disagreement_with_investigator. Used by the synthesis layer "
+            "and the master loop's graph builder as a stats-vs-LLM "
+            "cross-check against the investigator's CONFOUNDER labels."
+        ),
+    )
 
     @field_serializer("flags")
     def _serialize_flags(self, v: set[DataFlag]) -> list[str]:

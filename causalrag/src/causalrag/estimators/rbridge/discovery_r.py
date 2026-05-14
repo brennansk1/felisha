@@ -91,4 +91,90 @@ def discover_dag(
     )
 
 
-__all__ = ["discover_dag"]
+def discover_markov_boundary(
+    df: pd.DataFrame,
+    *,
+    target: str,
+    method: Literal["iamb", "fast.iamb", "inter.iamb", "iamb.fdr", "hpc", "mmpc", "si.hiton.pc"] = "iamb",
+    alpha: float = 0.05,
+) -> dict[str, object]:
+    """Discover the Markov boundary of ``target`` via bnlearn.
+
+    The Markov boundary MB(T) is the minimal subset S of V \\ {T} such
+    that T ⊥ V \\ (S ∪ {T}) | S. Under faithfulness it equals the
+    Markov blanket (parents, children, spouses) in the underlying DAG
+    — i.e., the minimal sufficient adjustment + descendant set for any
+    predictive query on T.
+
+    This wrapper calls bnlearn's MB algorithms directly (faster +
+    simpler than learning the whole DAG when you only care about one
+    target). Output is consumed by the discovery layer as a cross-
+    check against the LLM investigator's CONFOUNDER labels.
+
+    Methods (all from bnlearn):
+    - ``iamb`` — Incremental Association MB (Tsamardinos 2003)
+    - ``fast.iamb`` — fast variant; less aggressive shrinking
+    - ``inter.iamb`` — interleaved; better in low-power regimes
+    - ``iamb.fdr`` — FDR-controlled (Pena 2008) — recommended for
+      high-dim/low-sample where multiple-testing matters
+    - ``hpc`` — Hybrid Parents-and-Children (returns MB via union)
+    - ``mmpc`` — Max-Min PC (parents-and-children only; NOT the full MB)
+    - ``si.hiton.pc`` — semi-interleaved HITON-PC
+
+    Returns
+    -------
+    dict with keys:
+    - ``target``: the column queried
+    - ``mb``: list[str] — discovered Markov-boundary columns
+    - ``method``: the algorithm used
+    - ``alpha``: significance level
+    - ``n``: rows used (after dropna)
+    - ``test``: name of the conditional-independence test used
+    """
+    require("bnlearn")
+    ro = r_session()
+    work = df.dropna()
+    if target not in work.columns:
+        raise ValueError(f"target {target!r} not in df columns")
+
+    with converter():
+        ro.globalenv["df_"] = ro.conversion.py2rpy(work)
+
+    # Detect continuous vs discrete for bnlearn's test selection.
+    is_continuous = all(
+        pd.api.types.is_numeric_dtype(work[c]) and work[c].nunique() > 5
+        for c in work.columns
+    )
+    # bnlearn's MB-learning functions return a full `bn` object — we
+    # learn the network on the dataset, then extract the MB of the
+    # target node via `learned$nodes[[target]]$mb`.
+    if is_continuous:
+        ro.r(
+            f'net_ <- bnlearn::{method}(df_, test = "cor", alpha = {alpha})'
+        )
+        test_name = "cor"
+    else:
+        ro.r(
+            "df_disc <- as.data.frame(lapply(df_, function(x) "
+            "if (is.numeric(x)) cut(x, breaks=quantile(x, probs=seq(0,1,0.25), na.rm=TRUE), "
+            "include.lowest=TRUE) else as.factor(x)))"
+        )
+        ro.r(
+            f'net_ <- bnlearn::{method}(df_disc, test = "mi", alpha = {alpha})'
+        )
+        test_name = "mi"
+
+    # Extract MB of `target`. bnlearn::mb(bn, target) returns a character
+    # vector. Wrap in `as.character` to guarantee plain strings.
+    mb_cols = list(ro.r(f'as.character(bnlearn::mb(net_, "{target}"))'))
+    return {
+        "target": target,
+        "mb": [str(c) for c in mb_cols],
+        "method": method,
+        "alpha": alpha,
+        "n": int(len(work)),
+        "test": test_name,
+    }
+
+
+__all__ = ["discover_dag", "discover_markov_boundary"]

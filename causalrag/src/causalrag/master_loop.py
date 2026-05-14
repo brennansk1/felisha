@@ -788,13 +788,69 @@ def _foundation_followup_proposal(
 def _build_graph_for_proposal(
     *, protocol: StudyProtocol, df: pd.DataFrame, candidate: CandidateExperiment
 ) -> CausalGraph:
+    """Build the per-experiment adjustment graph.
+
+    A column labeled CONFOUNDER in the discovery brief is included in
+    the adjustment set UNLESS it is the proposed treatment, outcome,
+    mediator, instrument, or one of the proposed modifiers — those
+    serve a different role in this experiment. Without this filter the
+    graph builder produces self-loops (e.g., education-num → education-num
+    when the LLM picks education-num as the treatment but the
+    investigator had labelled it as a confounder), which DoWhy
+    correctly rejects as non-identifiable.
+
+    If the filter leaves zero confounders AND the proposed estimand is
+    backdoor-only (ATE/CATE/ATT/ATC), the remaining columns in the
+    dataframe (other than T, Y, mediator, instrument, modifiers) are
+    fallback-included as adjustment candidates so the LLM's intent is
+    not silently dropped to an empty set.
+    """
+    reserved = {candidate.treatment, candidate.outcome}
+    if candidate.mediator:
+        reserved.add(candidate.mediator)
+    if candidate.instrument:
+        reserved.add(candidate.instrument)
+    reserved |= set(candidate.modifiers or ())
+
     confounders: list[str] = []
     if protocol.discovery is not None:
         confounders = [
             v.name
             for v in protocol.discovery.columns
-            if v.role is VariableRole.CONFOUNDER and v.name in df.columns
+            if v.role is VariableRole.CONFOUNDER
+            and v.name in df.columns
+            and v.name not in reserved
         ]
+
+    # Promote columns the Markov boundary of the outcome flagged as
+    # in-MB but the investigator didn't label CONFOUNDER. This is the
+    # "stats says you missed these" path — it caught the Adult Census
+    # failure mode where the investigator labelled every potential
+    # treatment as a confounder and the planner picked one, leaving
+    # zero remaining variables in the adjustment set after the
+    # self-loop guard.
+    if protocol.discovery is not None and protocol.discovery.markov_boundaries:
+        for mb_report in protocol.discovery.markov_boundaries:
+            if mb_report.get("target") == candidate.outcome:
+                mb_cols = mb_report.get("mb", [])
+                for col in mb_cols:
+                    if col in df.columns and col not in reserved and col not in confounders:
+                        confounders.append(col)
+                break
+
+    # Fallback: if every column was labeled as outcome/auxiliary by the
+    # investigator AND the MB pass didn't surface anything either,
+    # include the remaining numeric columns in the dataframe as
+    # candidate confounders so identification has SOMETHING to work
+    # with.
+    if not confounders:
+        confounders = [
+            c
+            for c in df.columns
+            if c not in reserved
+            and pd.api.types.is_numeric_dtype(df[c])
+        ]
+
     edges = (
         [(c, candidate.treatment) for c in confounders]
         + [(c, candidate.outcome) for c in confounders]
