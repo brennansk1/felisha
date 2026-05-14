@@ -1096,6 +1096,107 @@ def run(
 
 
 @app.command()
+def auto(
+    source: Annotated[Path, typer.Argument(help="Path/URI to the dataset.")],
+    project: Annotated[Path | None, typer.Option("--project")] = None,
+    experiments: Annotated[int, typer.Option("--experiments", "-K", help="Total experiments to run.")] = 5,
+    foundation: Annotated[bool, typer.Option("--foundation", help="Enable foundation-recursion follow-ups.")] = False,
+    max_foundation_iterations: Annotated[int, typer.Option("--max-foundation-iterations")] = 8,
+    max_foundation_depth: Annotated[int, typer.Option("--max-foundation-depth")] = 4,
+    candidate_queue_size: Annotated[int, typer.Option("--queue-size")] = 18,
+    propose_k: Annotated[int, typer.Option("--propose-k")] = 3,
+    critic: Annotated[bool, typer.Option("--critic/--no-critic", help="Enable the critic agent.")] = True,
+    question: Annotated[
+        str | None, typer.Option("--question", "-q", help="One-sentence research question.")
+    ] = None,
+    base_url: Annotated[str, typer.Option("--base-url")] = "http://127.0.0.1:11434",
+) -> None:
+    """Autonomous master mode — LLM proposes K experiments + foundation chains.
+
+    Plans a prioritized candidate queue, runs propose-K → critique → commit
+    each turn, fires foundation follow-ups on significant non-red parents,
+    auto-schedules robustness re-runs on red sensitivity, and ends with
+    a domain-aware executive synthesis. See README §`/auto` for details.
+    """
+    from causalrag.cli.main import _scaffold_project
+    from causalrag.master_loop import LoopConfig, run_master_loop
+
+    project_dir = (project or Path.cwd()).resolve()
+    protocol_path = project_dir / PROTOCOL_FILENAME
+    if not protocol_path.exists():
+        project_dir = (project_dir / source.stem).resolve()
+        _scaffold_project(project_dir, name=source.stem, tier="academic")
+        protocol_path = project_dir / PROTOCOL_FILENAME
+        console.print(f"[dim]Auto-scaffolded project at {project_dir}[/dim]")
+
+    protocol = StudyProtocol.read_yaml(protocol_path)
+    if question:
+        protocol.research_question = question
+
+    data_path = source if source.is_absolute() else (project_dir / source).resolve()
+    if not data_path.exists() and source.exists():
+        data_path = source.resolve()
+    if not data_path.exists():
+        console.print(f"[red]Dataset not found: {source}[/red]")
+        raise typer.Exit(2)
+
+    profile = run_doctor(base_url=base_url)
+    slots, _ = recommend(profile)
+    cassette_dir = project_dir / ".causalrag" / "cassettes"
+    cassette_dir.mkdir(parents=True, exist_ok=True)
+    discovery_client = OllamaClient(
+        model=slots.discovery,
+        base_url=base_url,
+        cassette_dir=cassette_dir,
+        allow_live=True,
+    )
+    expert_client = OllamaClient(
+        model=slots.hypothesize,
+        base_url=base_url,
+        cassette_dir=cassette_dir,
+        allow_live=True,
+    ) if slots.hypothesize != slots.discovery else discovery_client
+
+    config = LoopConfig(
+        n_experiments=experiments,
+        foundation_allowed=foundation,
+        max_foundation_iterations=max_foundation_iterations,
+        max_foundation_depth=max_foundation_depth,
+        candidate_queue_size=candidate_queue_size,
+        propose_k=propose_k,
+        critic_enabled=critic,
+    )
+
+    console.print(
+        f"[dim]/auto · K={experiments} · foundation={foundation} · "
+        f"discovery={slots.discovery} · expert={slots.hypothesize}[/dim]"
+    )
+
+    for event in run_master_loop(
+        protocol=protocol,
+        project_dir=project_dir,
+        dataset_path=data_path,
+        discovery_client=discovery_client,
+        expert_client=expert_client,
+        config=config,
+    ):
+        if event.kind == "phase_start":
+            console.print(f"\n[bold cyan]▸ {event.message}[/bold cyan]")
+        elif event.kind == "phase_end":
+            console.print(f"[green]✓[/green] {event.message}")
+        elif event.kind == "card":
+            console.print(f"  {event.message}")
+        elif event.kind == "error":
+            console.print(f"[red]✗ {event.message}[/red]")
+        elif event.kind == "plan":
+            console.print(f"  [cyan]📋[/cyan] {event.message}")
+        elif event.kind == "done":
+            console.print(f"\n[bold green]{event.message}[/bold green]")
+        else:
+            console.print(f"  · {event.message}")
+
+
+@app.command()
 def tui(
     project: Annotated[
         Path | None,

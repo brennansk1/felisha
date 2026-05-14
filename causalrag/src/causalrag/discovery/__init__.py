@@ -133,6 +133,21 @@ def run_discovery(
     flags = emit_from_profile(
         profile, treatment=treatment, outcome=outcome, df=df
     )
+
+    # Missingness diagnostic — runs deterministically once T/Y are known.
+    # The report lands on DiscoveryResult so downstream callers can see
+    # whether to suggest MICE / IPCW / refuse, and HEAVY_MISSINGNESS is
+    # promoted to a flag if the diagnostic says so.
+    try:
+        from causalrag.data.missingness import diagnose_missingness
+
+        missingness_report = diagnose_missingness(df, treatment=treatment, outcome=outcome)
+        # If max per-column missing >= 20%, surface HEAVY_MISSINGNESS.
+        if missingness_report.per_column_rate and max(missingness_report.per_column_rate.values()) >= 0.20:
+            flags.add(DataFlag.HEAVY_MISSINGNESS)
+    except Exception:
+        missingness_report = None
+
     # Merge in flags that the LLM brief unambiguously implies
     # (MEDIATOR_PROPOSED, EFFECT_MODIFICATION_OF_INTEREST,
     # INSTRUMENTAL_CANDIDATE_PRESENT).

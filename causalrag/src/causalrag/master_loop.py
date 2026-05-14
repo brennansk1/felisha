@@ -901,6 +901,7 @@ def _run_one_experiment(
     chain_id: str | None,
     parent_id: str | None,
     config: LoopConfig,
+    propose_client: OllamaClient | None = None,
 ) -> tuple[RoadmapWalk, dict[str, Any], bool]:
     """Run Steps 5–8 for one candidate. Returns (walk, history_row, ok).
 
@@ -945,6 +946,27 @@ def _run_one_experiment(
         "adjustment_set": list(ident.adjustment_set),
         "estimand_expression": ident.estimand_expression,
     }
+
+    # Identification narration — LLM augmentation that explains WHY the
+    # adjustment set works (or doesn't) in plain language. Failure-safe.
+    if propose_client is not None:
+        try:
+            from causalrag.roadmap.identification_narration import narrate_identification
+
+            domain_brief = (
+                protocol.discovery.domain_brief if protocol.discovery else None
+            )
+            narration = narrate_identification(
+                estimand=est,
+                graph=graph,
+                result=ident,
+                domain_brief=domain_brief,
+                client=propose_client,
+            )
+            walk.q5_identification["narration"] = narration.model_dump()
+        except Exception:
+            pass  # silent — narration is best-effort
+
     if not ident.identifiable:
         walk.failure_reason = (
             f"not identifiable under strategy='{ident.strategy}'. "
@@ -1002,6 +1024,8 @@ def _run_one_experiment(
 
     verdict_color = "unknown"
     sensitivity_rationale = ""
+    ev: Any = None
+    sm: Any = None
     try:
         ev = evalue_for_estimator(
             result, outcome_dtype=outcome_dtype, baseline_risk=baseline_risk
@@ -1051,6 +1075,61 @@ def _run_one_experiment(
 
     walk.sensitivity_verdict = verdict_color
     walk.q8_interpretation = sensitivity_rationale
+
+    # Anomaly / sanity-check audit — catches subtle wrong-shape patterns
+    # the deterministic refutations miss (implausible magnitude, sign-flip
+    # vs naive, near-zero n, saturated propensity). Runs deterministic
+    # pre-screen always, and consults the LLM when one is available.
+    try:
+        from causalrag.sensitivity.anomaly_audit import audit_for_anomalies
+
+        domain_brief = (
+            protocol.discovery.domain_brief if protocol.discovery else None
+        )
+        audit = audit_for_anomalies(
+            result=result,
+            walk=walk,
+            treatment=candidate.treatment,
+            outcome=candidate.outcome,
+            naive_estimate=None,
+            domain_brief=domain_brief,
+            client=propose_client,
+        )
+        if isinstance(result.diagnostics, dict):
+            result.diagnostics["anomaly_audit"] = audit.model_dump()
+    except Exception:
+        pass  # silent — audit is best-effort
+
+    # Sensitivity interpretation — LLM-translated, domain-aware. The
+    # deterministic verdict color is pinned; the LLM only enriches the
+    # rationale prose with domain context.
+    if propose_client is not None and ev is not None:
+        try:
+            from causalrag.sensitivity.interpretation import interpret_sensitivity
+
+            domain_brief = (
+                protocol.discovery.domain_brief if protocol.discovery else None
+            )
+            interp = interpret_sensitivity(
+                evalue_result=ev,
+                sensemakr_result=sm,
+                deterministic_verdict=verdict_color,  # type: ignore[arg-type]
+                point_estimate=result.point_estimate,
+                ci_low=result.ci_low,
+                ci_high=result.ci_high,
+                treatment=candidate.treatment,
+                outcome=candidate.outcome,
+                domain_brief=domain_brief,
+                outcome_dtype=outcome_dtype,
+                client=propose_client,
+                deterministic_rationale=sensitivity_rationale,
+            )
+            # Replace the static rationale with the richer LLM one
+            walk.q8_interpretation = interp.rationale or sensitivity_rationale
+            if isinstance(result.diagnostics, dict):
+                result.diagnostics["sensitivity_interpretation"] = interp.model_dump()
+        except Exception:
+            pass  # silent — interpretation is best-effort
 
     # Auto-fire tipping-point analysis when verdict is yellow OR red.
     # The tipping point asks: how strong would an unmeasured confounder
@@ -1202,12 +1281,17 @@ def _should_fire_foundation_child(
     t_stat = abs(est.point_estimate / est.se)
     if t_stat < 1.96:
         return False, f"parent not significant (|t|={t_stat:.2f} < 1.96)"
-    # Note: red sensitivity used to short-circuit substantive follow-ups
-    # here, leaving only the robustness re-run. That produced identical
-    # repeated experiments on the lalonde smoke test. Now: red parents
-    # still fire substantive follow-ups (the auto-robustness candidate
-    # runs separately, and the synthesis-layer confidence override stops
-    # the LLM from over-claiming on the fragile foundation).
+    # Don't drill into a parent whose sensitivity verdict couldn't be
+    # computed — we have no signal about whether the foundation is
+    # trustworthy.
+    if parent_walk.sensitivity_verdict in {"errored", "unknown", None}:
+        return False, (
+            f"parent sensitivity={parent_walk.sensitivity_verdict} — can't "
+            "judge whether to build on this finding"
+        )
+    # Red parents still fire substantive follow-ups (the auto-robustness
+    # candidate runs separately, and the synthesis confidence override
+    # stops over-claiming on a fragile foundation).
     if parent_walk.sensitivity_verdict == "red":
         return True, "red sensitivity — substantive follow-up allowed AND robustness child"
     return True, "significant parent + budgets ok"
@@ -1464,6 +1548,39 @@ def run_master_loop(
         )
         candidates = []
 
+    # Dedupe pass — remove near-duplicates from the queue before the
+    # iteration loop runs the critic on the top-K. Deterministic
+    # pre-pass groups exact (T, Y, estimand, modifiers); the LLM
+    # critique refines.
+    if candidates:
+        try:
+            from causalrag.hypothesize.dedupe import dedupe_candidates
+
+            candidates_before = len(candidates)
+            candidates, dedupe_plan = dedupe_candidates(
+                candidates, client=propose_client
+            )
+            n_dropped = candidates_before - len(candidates)
+            if n_dropped > 0:
+                yield LoopEvent(
+                    kind="log",
+                    phase="plan",
+                    message=(
+                        f"dedupe: dropped {n_dropped}/{candidates_before} "
+                        f"near-duplicates"
+                    ),
+                    payload={
+                        "pruned": [p.model_dump() for p in dedupe_plan.pruned],
+                        "merged": [m.model_dump() for m in dedupe_plan.merged],
+                    },
+                )
+        except Exception as e:
+            yield LoopEvent(
+                kind="log",
+                phase="plan",
+                message=f"dedupe skipped: {type(e).__name__}: {e}",
+            )
+
     scored: dict[str, dict[str, float]] = {}
     completed: list[RoadmapWalk] = []
     if candidates:
@@ -1646,6 +1763,7 @@ def run_master_loop(
             chain_id=next_chain_id,
             parent_id=next_parent_id,
             config=config,
+            propose_client=propose_client,
         )
         if not ok:
             yield LoopEvent(
@@ -1810,13 +1928,36 @@ def run_master_loop(
                     history=history,
                     client=propose_client,
                 )
-                if followup_proposal.decision == "run":
+                if followup_proposal.decision != "run":
+                    yield LoopEvent(
+                        kind="log",
+                        phase="auto",
+                        message=(
+                            f"foundation LLM voted stop on {walk.hypothesis_id}: "
+                            f"{followup_proposal.stop_reason or '(no reason given)'}"
+                        ),
+                    )
+                elif not (
+                    followup_proposal.treatment
+                    and followup_proposal.outcome
+                    and followup_proposal.estimand_class
+                ):
+                    yield LoopEvent(
+                        kind="log",
+                        phase="auto",
+                        message=(
+                            f"foundation LLM returned incomplete proposal "
+                            f"for {walk.hypothesis_id} (missing T/Y/estimand) "
+                            "— skipping."
+                        ),
+                    )
+                else:
                     followup_cand = CandidateExperiment(
                         candidate_id=f"foundation-{walk.hypothesis_id}",
                         research_question=followup_proposal.research_question or "",
-                        treatment=followup_proposal.treatment or "",
-                        outcome=followup_proposal.outcome or "",
-                        estimand_class=followup_proposal.estimand_class or "",
+                        treatment=followup_proposal.treatment,
+                        outcome=followup_proposal.outcome,
+                        estimand_class=followup_proposal.estimand_class,
                         modifiers=list(followup_proposal.modifiers),
                         mediator=followup_proposal.mediator,
                         instrument=followup_proposal.instrument,

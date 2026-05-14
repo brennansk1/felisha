@@ -117,5 +117,6 @@ addopts = "-ra --strict-markers"
 markers = [
     "integration: end-to-end smoke tests",
     "live_llm: requires a running Ollama server (opt-in)",
+    "slow: long-running tests (multi-minute LLM walks); skipped by default",
 ]
 asyncio_mode = "auto"

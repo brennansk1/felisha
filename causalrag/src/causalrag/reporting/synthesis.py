@@ -780,7 +780,30 @@ def synthesize_insights(
     traceback is written there for diagnosis.
     """
     n_walks = sum(1 for w in protocol.roadmap_walks.values() if w.q7_estimates)
+
+    # Cross-experiment analysis — surfaces contradictions, reinforcements,
+    # and chain narratives BEFORE the synthesis prompt. Failure-safe.
+    cross_block = ""
+    try:
+        from causalrag.reporting.cross_experiment import (
+            analyze_cross_experiment,
+            cross_experiment_block_for_prompt,
+        )
+
+        analysis = analyze_cross_experiment(protocol=protocol, client=client)
+        cross_block = cross_experiment_block_for_prompt(analysis)
+    except Exception:
+        cross_block = ""
+
     prompt = _build_synthesis_prompt(protocol, df)
+    if cross_block:
+        prompt = (
+            prompt
+            + "\n\n## Cross-experiment analysis\n"
+            + cross_block
+            + "\n\nUse the cross-experiment analysis above to ensure the "
+            "synthesis honors contradictions and reinforcements."
+        )
     try:
         response = client.parse(
             prompt=prompt,
