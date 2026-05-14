@@ -219,6 +219,140 @@ def overlap_summary(
     return OverlapDiagnostics(positivity=pos, balance=bal, worst_imbalance=worst)
 
 
+def continuous_positivity_check(
+    df: pd.DataFrame,
+    treatment: str,
+    confounders: tuple[str, ...],
+) -> dict:
+    """Density-based positivity diagnostic for continuous treatments.
+
+    Fits a Gaussian KDE on the treatment marginal and flags regions with
+    density below 5% of the peak as unsupported. This is the continuous
+    analogue of :func:`propensity_overlap`; for the strict generalized
+    propensity story we would need ``f(T|X)``, but the marginal-density
+    sanity check already catches the common failure mode of disjoint
+    treatment regions (e.g. dose gaps).
+
+    Returns a dict with keys ``verdict``, ``unsupported_treatment_range``,
+    ``fraction_outside_support`` and ``interpretation``.
+    """
+    del confounders  # unused at the marginal-density level; reserved for f(T|X)
+
+    t = pd.to_numeric(df[treatment], errors="coerce").dropna().to_numpy()
+    n = len(t)
+    n_unique = int(np.unique(t).size)
+
+    if n < 30:
+        return {
+            "verdict": "unknown",
+            "unsupported_treatment_range": None,
+            "fraction_outside_support": 0.0,
+            "interpretation": (
+                f"Refusing to run continuous positivity check: n={n} < 30 rows. "
+                f"KDE-based support estimation is unreliable on tiny samples."
+            ),
+        }
+    if n_unique <= 5:
+        return {
+            "verdict": "unknown",
+            "unsupported_treatment_range": None,
+            "fraction_outside_support": 0.0,
+            "interpretation": (
+                f"Refusing to run continuous positivity check: treatment has "
+                f"only {n_unique} unique value(s). Looks discrete/degenerate; "
+                f"use the binary/categorical positivity diagnostic instead."
+            ),
+        }
+
+    from scipy.stats import gaussian_kde
+
+    # Use a tighter bandwidth than Scott's default so that genuine gaps in
+    # support survive the smoothing; Scott's rule oversmooths bimodal data
+    # and would hide the very holes this check is meant to expose.
+    try:
+        kde = gaussian_kde(t, bw_method="silverman")
+        kde.set_bandwidth(kde.factor * 0.5)
+    except (np.linalg.LinAlgError, ValueError) as exc:
+        return {
+            "verdict": "unknown",
+            "unsupported_treatment_range": None,
+            "fraction_outside_support": 0.0,
+            "interpretation": f"KDE fit failed ({exc}); treatment may be degenerate.",
+        }
+
+    t_min, t_max = float(t.min()), float(t.max())
+    grid = np.linspace(t_min, t_max, 512)
+    dens = kde(grid)
+    peak = float(dens.max())
+    if peak <= 0:
+        return {
+            "verdict": "unknown",
+            "unsupported_treatment_range": None,
+            "fraction_outside_support": 0.0,
+            "interpretation": "KDE produced non-positive peak density; cannot assess support.",
+        }
+
+    threshold = 0.05 * peak
+    unsupported_mask = dens < threshold
+
+    if unsupported_mask.any():
+        lo = float(grid[unsupported_mask].min())
+        hi = float(grid[unsupported_mask].max())
+        unsupported_range: tuple[float, float] | None = (lo, hi)
+    else:
+        unsupported_range = None
+
+    # ``fraction_outside_support`` combines two failure modes:
+    #   (a) sample points that fall in low-density tails/holes
+    #       (sample_dens < threshold), and
+    #   (b) the proportion of the observed range that is unsupported
+    #       (width of the gap relative to the full data span).
+    # Taking the max means an interior gap between modes is flagged even when
+    # no individual sample sits inside it.
+    sample_dens = kde(t)
+    frac_samples = float((sample_dens < threshold).mean())
+    span = max(t_max - t_min, 1e-12)
+    frac_range = float(unsupported_mask.mean()) if unsupported_mask.any() else 0.0
+    # Only count the *interior* portion of unsupported range, not the natural
+    # tapering at the data edges (within 2% of either end).
+    edge_band = 0.02 * span
+    interior_mask = unsupported_mask & (grid > t_min + edge_band) & (grid < t_max - edge_band)
+    frac_interior = float(interior_mask.mean()) if interior_mask.any() else 0.0
+    fraction_outside = max(frac_samples, frac_interior)
+    del frac_range  # reserved for future reporting
+
+    if fraction_outside < 0.02:
+        verdict: Literal["green", "yellow", "red"] = "green"
+        interpretation = (
+            f"Continuous positivity OK: only {fraction_outside:.1%} of treatment "
+            f"values lie in low-density regions (<5% of peak). KDE support spans "
+            f"[{t_min:.3g}, {t_max:.3g}]."
+        )
+    elif fraction_outside < 0.10:
+        verdict = "yellow"
+        interpretation = (
+            f"Mild continuous-positivity concern: {fraction_outside:.1%} of T values "
+            f"fall in low-density regions"
+            + (f" around [{unsupported_range[0]:.3g}, {unsupported_range[1]:.3g}]" if unsupported_range else "")
+            + ". Consider restricting the estimand to the well-supported dose range."
+        )
+    else:
+        verdict = "red"
+        interpretation = (
+            f"Continuous-positivity violated: {fraction_outside:.1%} of T values "
+            f"fall in sparsely-supported regions"
+            + (f" (gap around [{unsupported_range[0]:.3g}, {unsupported_range[1]:.3g}])" if unsupported_range else "")
+            + ". Dose-response estimates outside the supported range are extrapolation."
+        )
+
+    return {
+        "verdict": verdict,
+        "unsupported_treatment_range": unsupported_range,
+        "fraction_outside_support": fraction_outside,
+        "interpretation": interpretation,
+    }
+
+
 __all__ = [
     "PositivityResult",
     "BalanceRow",
@@ -226,4 +360,5 @@ __all__ = [
     "propensity_overlap",
     "balance_diagnostic",
     "overlap_summary",
+    "continuous_positivity_check",
 ]

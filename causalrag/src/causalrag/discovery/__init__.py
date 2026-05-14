@@ -116,6 +116,20 @@ def run_discovery(
         columns = to_variable_specs(profile, _empty_investigator(profile))
         dag_audit = ()
 
+    # If T/Y weren't passed in explicitly, infer them from the investigator's
+    # role assignments. This fires the T/Y-aware detectors
+    # (BINARY_TREATMENT, IMBALANCED_TREATMENT, BOUNDED_OUTCOME, etc.)
+    # automatically in master mode where the caller doesn't know which
+    # column is which yet.
+    if (treatment is None or outcome is None) and investigator_report is not None:
+        from causalrag.core.roles import VariableRole
+
+        for var in columns:
+            if treatment is None and var.role is VariableRole.TREATMENT:
+                treatment = var.name
+            elif outcome is None and var.role is VariableRole.OUTCOME:
+                outcome = var.name
+
     flags = emit_from_profile(
         profile, treatment=treatment, outcome=outcome, df=df
     )

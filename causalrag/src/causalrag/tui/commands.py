@@ -1183,8 +1183,20 @@ async def run_auto(app: "CausalRoadmapTUI", args: list[str]) -> None:
         "discover": 1, "feasibility": 2, "hypothesize": 3,
         "estimate": 4, "sensitivity": 5, "report": 6,
     }
+    queue_panel = getattr(app, "queue_panel", None)
+    chain_forest = getattr(app, "chain_forest", None)
     for ev in events:
         phase_idx = phase_map.get(ev.phase, 0)
+        # Push planner + result events to the live panels (skip cleanly
+        # if --auto mode wasn't enabled).
+        if ev.kind == "plan" and queue_panel is not None:
+            queue_panel.update_panel(ev.payload)
+        elif ev.kind == "card":
+            if queue_panel is not None:
+                queue_panel.update_panel(ev.payload)
+            if chain_forest is not None:
+                chain_forest.update_panel(ev.payload)
+
         if ev.kind == "phase_start":
             app.set_phase(phase_idx)
             app.log_view.line(ev.message or "", kind="acc", gutter="▸")

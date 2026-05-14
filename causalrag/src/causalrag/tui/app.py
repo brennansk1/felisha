@@ -24,8 +24,10 @@ from textual.widgets import Static
 
 from causalrag.core.protocol import StudyProtocol
 from causalrag.tui.commands import dispatch
+from causalrag.tui.widgets.chain_forest import ChainForestPanel
 from causalrag.tui.widgets.composer import COMMANDS, ComposerPanel
 from causalrag.tui.widgets.logview import LogView
+from causalrag.tui.widgets.queue_panel import QueuePanel
 from causalrag.tui.widgets.statusbar import StatusBar
 from causalrag.tui.widgets.titlebar import TitleBar
 
@@ -48,7 +50,9 @@ class CausalRoadmapTUI(App):
         Binding("ctrl+k", "focus_input", "Focus input"),
     ]
 
-    def __init__(self, project_dir: Path | None = None) -> None:
+    def __init__(
+        self, project_dir: Path | None = None, auto_mode: bool = False
+    ) -> None:
         super().__init__()
         self.project_dir = (project_dir or Path.cwd()).resolve()
         self.protocol: StudyProtocol | None = None
@@ -63,9 +67,20 @@ class CausalRoadmapTUI(App):
         self.status_bar = StatusBar()
         self.composer = ComposerPanel()
         self._running_worker = None
+        # `--auto` mode mounts the live planner-queue + chain-forest panels
+        # so the user can watch the master loop's reasoning in flight.
+        self.auto_mode = auto_mode
+        self.queue_panel: QueuePanel | None = QueuePanel() if auto_mode else None
+        self.chain_forest: ChainForestPanel | None = (
+            ChainForestPanel() if auto_mode else None
+        )
 
     def compose(self) -> ComposeResult:
         yield self.title_bar
+        if self.queue_panel is not None:
+            yield self.queue_panel
+        if self.chain_forest is not None:
+            yield self.chain_forest
         yield self.log_view
         yield self.composer
         yield self.status_bar
@@ -148,9 +163,14 @@ class CausalRoadmapTUI(App):
         self.composer.input.focus()
 
 
-def run(project_dir: Path | None = None) -> None:
-    """Run the TUI. Used by the ``causalrag tui`` entry point."""
-    app = CausalRoadmapTUI(project_dir=project_dir)
+def run(project_dir: Path | None = None, auto_mode: bool = False) -> None:
+    """Run the TUI. Used by the ``causalrag tui`` entry point.
+
+    When ``auto_mode=True`` (CLI ``--auto`` flag), the live candidate-queue
+    and chain-forest panels are mounted above the log so the user can
+    watch the master loop's planning + chain bookkeeping in flight.
+    """
+    app = CausalRoadmapTUI(project_dir=project_dir, auto_mode=auto_mode)
     app.run()
 
 

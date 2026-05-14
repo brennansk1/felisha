@@ -288,9 +288,25 @@ CATALOG: tuple[MethodSpec, ...] = (
 )
 
 
-def catalog_markdown(backends: tuple[str, ...] = ("python", "r")) -> str:
+def catalog_markdown(
+    backends: tuple[str, ...] = ("python", "r"),
+    flags: set[DataFlag] | frozenset[DataFlag] | None = None,
+) -> str:
     """Render the catalog as a markdown table the LLM can read in its
-    system prompt. One line per method, with the use case + trigger flags."""
+    system prompt. One line per method, with the use case + trigger flags.
+
+    Parameters
+    ----------
+    backends:
+        Restrict to these backend keys (``"python"``, ``"r"``).
+    flags:
+        Active :class:`DataFlag` set. When provided, the catalog is filtered
+        so the LLM only sees estimators that are compatible with the current
+        protocol — i.e., every entry's ``required_flags`` are satisfied and
+        none of its ``excluded_flags`` are active. Passing ``None`` (the
+        default) returns the full catalog (backward compatible).
+    """
+    active: frozenset[DataFlag] = frozenset(flags) if flags is not None else frozenset()
     lines = [
         "| Estimator ID | Backend | When to use it | Estimands | Trigger flags | Min n |",
         "|---|---|---|---|---|---|",
@@ -298,10 +314,17 @@ def catalog_markdown(backends: tuple[str, ...] = ("python", "r")) -> str:
     for spec in CATALOG:
         if spec.backend not in backends:
             continue
-        flags = ", ".join(f.value for f in spec.required_flags) or "—"
+        if flags is not None:
+            req = frozenset(spec.required_flags)
+            exc = frozenset(spec.excluded_flags)
+            if req and not req.issubset(active):
+                continue
+            if exc & active:
+                continue
+        trigger = ", ".join(f.value for f in spec.required_flags) or "—"
         estimands = ", ".join(spec.estimands)
         lines.append(
-            f"| `{spec.estimator_id}` | {spec.backend} | {spec.use_case} | {estimands} | {flags} | {spec.min_n} |"
+            f"| `{spec.estimator_id}` | {spec.backend} | {spec.use_case} | {estimands} | {trigger} | {spec.min_n} |"
         )
     return "\n".join(lines)
 

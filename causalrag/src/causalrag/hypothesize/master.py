@@ -122,7 +122,9 @@ def run_master_hypothesize(
         raise ValueError("Master hypothesize requires a completed discovery phase.")
 
     prompt = _build_prompt(protocol, k=k)
-    system = _MASTER_SYSTEM_PROMPT.replace("{CATALOG_TABLE}", catalog_markdown())
+    system = _MASTER_SYSTEM_PROMPT.replace(
+        "{CATALOG_TABLE}", catalog_markdown(flags=set(protocol.flags))
+    )
     response = client.parse(
         prompt=prompt,
         schema=MasterQueue,

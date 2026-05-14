@@ -348,12 +348,19 @@ def run_domain_expert(
     client: OllamaClient,
     research_question: str | None = None,
     k: int = 3,
+    flags: set[DataFlag] | frozenset[DataFlag] | None = None,
 ) -> tuple[DomainExpertBrief, list[ConfounderContradiction], LLMResponse]:
     prompt = _build_prompt(profile, investigator, research_question, k=k)
     # Inject the live method catalog so the expert knows what's available.
+    # If the caller can supply the active DataFlag set (e.g., from the
+    # in-progress protocol), filter the catalog so only compatible
+    # estimators appear in the prompt — this trims the LLM's context and
+    # prevents it from suggesting methods that don't apply.
     from causalrag.estimators.catalog import catalog_markdown
 
-    system = _SYSTEM_PROMPT.replace("{CATALOG_TABLE}", catalog_markdown())
+    system = _SYSTEM_PROMPT.replace(
+        "{CATALOG_TABLE}", catalog_markdown(flags=flags)
+    )
     response = client.parse(
         prompt=prompt,
         schema=DomainExpertBrief,

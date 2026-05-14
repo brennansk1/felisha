@@ -62,6 +62,52 @@ def _has_pymc_bart() -> bool:
         return False
 
 
+def _bart_convergence_diagnostics(trace: Any) -> dict[str, Any]:
+    """Compute R-hat / ESS / divergent-transition diagnostics from a PyMC
+    trace via arviz. Surfaces failures as ``None`` rather than raising — a
+    diagnostic computation should never block nuisance fitting.
+    """
+    diagnostics: dict[str, Any] = {
+        "r_hat_max": None,
+        "ess_min": None,
+        "n_divergent": None,
+    }
+    try:
+        import arviz as az
+
+        try:
+            diagnostics["r_hat_max"] = float(az.rhat(trace).to_array().values.max())
+        except Exception:
+            diagnostics["r_hat_max"] = None
+        try:
+            diagnostics["ess_min"] = float(az.ess(trace).to_array().values.min())
+        except Exception:
+            diagnostics["ess_min"] = None
+        try:
+            if hasattr(trace, "sample_stats") and "diverging" in trace.sample_stats:
+                diagnostics["n_divergent"] = int(
+                    trace.sample_stats["diverging"].sum().values.item()
+                )
+        except Exception:
+            diagnostics["n_divergent"] = None
+    except Exception:
+        return diagnostics
+
+    warnings = []
+    r_hat_max = diagnostics["r_hat_max"]
+    ess_min = diagnostics["ess_min"]
+    n_div = diagnostics["n_divergent"]
+    if r_hat_max is not None and r_hat_max > 1.1:
+        warnings.append(f"r_hat_max={r_hat_max:.3f} > 1.1")
+    if ess_min is not None and ess_min < 100:
+        warnings.append(f"ess_min={ess_min:.1f} < 100")
+    if n_div is not None and n_div > 0:
+        warnings.append(f"n_divergent={n_div} > 0")
+    if warnings:
+        diagnostics["warning"] = "BART convergence concern: " + "; ".join(warnings)
+    return diagnostics
+
+
 def resolve_library(
     library: Library,
     *,
@@ -168,6 +214,7 @@ class _BARTSklearnRegressor:
         self.random_state = random_state
         self._idata: Any = None
         self._x_shape: tuple[int, int] | None = None
+        self.diagnostics_: dict[str, Any] = {}
 
     def fit(self, X, y):  # type: ignore[no-untyped-def]
         import numpy as np
@@ -188,10 +235,11 @@ class _BARTSklearnRegressor:
                 random_seed=self.random_state,
                 progressbar=False,
                 chains=2,
-                compute_convergence_checks=False,
+                compute_convergence_checks=True,
             )
             self._model = model
             self._x_data = x_data
+        self.diagnostics_ = {"bart": _bart_convergence_diagnostics(self._idata)}
         return self
 
     def predict(self, X):  # type: ignore[no-untyped-def]

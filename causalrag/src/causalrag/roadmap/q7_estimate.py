@@ -40,6 +40,7 @@ def estimate(
     preprocess: bool = True,
     selection: SelectionMethod = "auto",
     pinned_covariates: tuple[str, ...] = (),
+    pin_adjustment_set: bool = True,
 ) -> EstimationResult:
     """Run Step 7 for a single estimand.
 
@@ -84,8 +85,25 @@ def estimate(
         adj_used = _expand(adj_used)
         mods_used = _expand(mods_used)
 
-    # Principled variable selection on the adjustment set.
-    if adj_used:
+    # Principled variable selection on the adjustment set — but only when the
+    # adjustment set is *not* a confirmatory DAG-derived backdoor set. When
+    # Step 5 produced a backdoor-admissible set we must keep it verbatim;
+    # otherwise data-driven selection can silently drop columns the DAG
+    # required for identification.
+    variable_selection_skipped = False
+    skip_reason: str | None = None
+    if (
+        pin_adjustment_set
+        and identification.strategy == "backdoor"
+        and len(identification.adjustment_set) > 0
+        and confounders is None
+    ):
+        variable_selection_skipped = True
+        skip_reason = (
+            "Adjustment set pinned from Step 5 backdoor identification; "
+            "data-driven variable selection skipped to preserve identifiability."
+        )
+    elif adj_used:
         sel = select_variables(
             df_used,
             estimand.treatment,
@@ -139,6 +157,9 @@ def estimate(
         result.diagnostics["preprocessing"] = preprocess_manifest_dict
     if selection_dict is not None:
         result.diagnostics["variable_selection"] = selection_dict
+    if variable_selection_skipped:
+        result.diagnostics["variable_selection_skipped"] = True
+        result.diagnostics["variable_selection_skipped_reason"] = skip_reason
     if overlap is not None:
         result.diagnostics["overlap"] = overlap
 

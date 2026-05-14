@@ -36,6 +36,58 @@ def _bart_available() -> bool:
         return False
 
 
+def _bart_convergence_diagnostics(trace: Any) -> dict[str, Any]:
+    """Compute R-hat, ESS, and divergent-transition diagnostics from a PyMC
+    trace using arviz. Returns a dict suitable for ``EstimationResult.diagnostics``.
+
+    Failures inside arviz are swallowed and surfaced as ``None`` so that BART
+    estimation never crashes purely because of a diagnostic computation
+    problem.
+    """
+    diagnostics: dict[str, Any] = {
+        "r_hat_max": None,
+        "ess_min": None,
+        "n_divergent": None,
+    }
+    try:
+        import arviz as az
+
+        try:
+            r_hat = az.rhat(trace)
+            r_hat_max = float(r_hat.to_array().values.max())
+            diagnostics["r_hat_max"] = r_hat_max
+        except Exception:
+            diagnostics["r_hat_max"] = None
+        try:
+            ess = az.ess(trace)
+            ess_min = float(ess.to_array().values.min())
+            diagnostics["ess_min"] = ess_min
+        except Exception:
+            diagnostics["ess_min"] = None
+        try:
+            if hasattr(trace, "sample_stats") and "diverging" in trace.sample_stats:
+                n_div = int(trace.sample_stats["diverging"].sum().values.item())
+                diagnostics["n_divergent"] = n_div
+        except Exception:
+            diagnostics["n_divergent"] = None
+    except Exception:
+        return diagnostics
+
+    warnings = []
+    r_hat_max = diagnostics["r_hat_max"]
+    ess_min = diagnostics["ess_min"]
+    n_div = diagnostics["n_divergent"]
+    if r_hat_max is not None and r_hat_max > 1.1:
+        warnings.append(f"r_hat_max={r_hat_max:.3f} > 1.1")
+    if ess_min is not None and ess_min < 100:
+        warnings.append(f"ess_min={ess_min:.1f} < 100")
+    if n_div is not None and n_div > 0:
+        warnings.append(f"n_divergent={n_div} > 0")
+    if warnings:
+        diagnostics["warning"] = "BART convergence concern: " + "; ".join(warnings)
+    return diagnostics
+
+
 class BARTEstimator:
     """ATE / CATE via BART nuisance regression with posterior credible
     intervals on the treatment-effect contrast."""
@@ -85,6 +137,7 @@ class BARTEstimator:
         self._n_used: int = 0
         self._fit_seconds: float | None = None
         self._backend_version: str | None = None
+        self._convergence_diagnostics: dict[str, Any] = {}
 
     def fit(self, data: pd.DataFrame, protocol: StudyProtocol) -> BARTEstimator:
         if not _bart_available():
@@ -123,7 +176,7 @@ class BARTEstimator:
                 chains=self.chains,
                 random_seed=self.random_state,
                 progressbar=False,
-                compute_convergence_checks=False,
+                compute_convergence_checks=True,
             )
 
             x_t1 = np.column_stack([x, np.ones_like(t).reshape(-1, 1)])
@@ -142,6 +195,7 @@ class BARTEstimator:
         mu0 = post0.predictions["mu"].values.reshape(-1, self._n_used)
         # Posterior of the per-row CATE; ATE is the row-mean per draw.
         self._posterior_diff = (mu1 - mu0).mean(axis=1)
+        self._convergence_diagnostics = _bart_convergence_diagnostics(idata)
         self._fit_seconds = time.perf_counter() - start
         import pymc_bart
 
@@ -171,6 +225,7 @@ class BARTEstimator:
                 "posterior_draws": int(post.size),
                 "interval_type": "posterior_credible",
                 "m_trees": self.m,
+                "bart": dict(self._convergence_diagnostics),
             },
             backend_version=self._backend_version,
             fit_seconds=self._fit_seconds,

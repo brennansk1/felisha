@@ -494,6 +494,151 @@ def _build_planner_prompt(protocol: StudyProtocol, config: LoopConfig) -> str:
     return "\n".join(parts)
 
 
+# ─────────── Working-memory compressor + chain forest ───────────────────
+#
+# As experiments accumulate, the propose / critic / foundation prompts
+# would grow linearly with history. At K=20+ that blows the 8K context
+# window. Compress: keep the last `keep_verbatim` experiments verbatim,
+# and replace the older tail with a structured summary the LLM can
+# still reason from.
+
+_KEEP_VERBATIM = 5
+
+
+def _compress_history(
+    history: list[dict[str, Any]], keep_verbatim: int = _KEEP_VERBATIM
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """Split history into (recent, summary). Summary is None if history fits."""
+    if len(history) <= keep_verbatim:
+        return history, None
+    older = history[:-keep_verbatim]
+    recent = history[-keep_verbatim:]
+    by_class: dict[str, int] = {}
+    by_ty: dict[tuple[str, str], int] = {}
+    modifiers_seen: set[str] = set()
+    dead_ends: list[str] = []
+    significant: list[str] = []
+    for h in older:
+        klass = (h.get("estimand_class") or "?").upper()
+        by_class[klass] = by_class.get(klass, 0) + 1
+        t, y = h.get("treatment") or "?", h.get("outcome") or "?"
+        by_ty[(t, y)] = by_ty.get((t, y), 0) + 1
+        for m in h.get("modifiers", []) or []:
+            modifiers_seen.add(m)
+        if h.get("failure_reason"):
+            dead_ends.append(f"{h.get('id')}: {h['failure_reason']}")
+        else:
+            try:
+                p = h.get("p_value")
+                if p and p != "NA" and float(p) < 0.05:
+                    significant.append(
+                        f"{h.get('id')}: {t}→{y} ({klass}) p={p}"
+                    )
+            except (TypeError, ValueError):
+                pass
+    return recent, {
+        "n_older": len(older),
+        "estimand_classes_run": by_class,
+        "ty_pairs_attempted": [f"{t}→{y} (×{n})" for (t, y), n in by_ty.items()],
+        "modifiers_explored": sorted(modifiers_seen),
+        "dead_ends": dead_ends[:5],
+        "significant_findings": significant[:5],
+    }
+
+
+def _render_history_block(history: list[dict[str, Any]]) -> list[str]:
+    recent, summary = _compress_history(history)
+    parts: list[str] = []
+    if summary is not None:
+        parts.append(
+            f"## Older experiments ({summary['n_older']}) — structured summary"
+        )
+        parts.append(f"  - estimand classes run: {summary['estimand_classes_run']}")
+        if summary["ty_pairs_attempted"]:
+            parts.append(
+                f"  - (T,Y) pairs attempted: {', '.join(summary['ty_pairs_attempted'])}"
+            )
+        if summary["modifiers_explored"]:
+            parts.append(
+                f"  - modifiers explored: {', '.join(summary['modifiers_explored'])}"
+            )
+        if summary["dead_ends"]:
+            parts.append("  - dead ends:")
+            for d in summary["dead_ends"]:
+                parts.append(f"      · {d}")
+        if summary["significant_findings"]:
+            parts.append("  - significant findings (raw p):")
+            for s in summary["significant_findings"]:
+                parts.append(f"      · {s}")
+        parts.append("")
+    parts.append(f"## Recent experiments (last {len(recent)})")
+    if recent:
+        for i, h in enumerate(recent, 1):
+            extras = ""
+            if h.get("chain_id"):
+                extras += f" · CHAIN={h['chain_id']}"
+            if h.get("failure_reason"):
+                extras += f" · ❌ {h['failure_reason']}"
+            parts.append(
+                f"  [{i}] {h['id']}: {h['treatment']} → {h['outcome']} "
+                f"({h['estimand_class']}) "
+                f"point={h.get('point_estimate', 0):+.4f} "
+                f"sensitivity={h.get('sensitivity_verdict', '?')}{extras}"
+            )
+    else:
+        parts.append("  (none — this is the first iteration)")
+    return parts
+
+
+def _render_chain_forest(history: list[dict[str, Any]]) -> list[str]:
+    chains: dict[str, list[dict[str, Any]]] = {}
+    for h in history:
+        cid = h.get("chain_id") or h["id"]
+        chains.setdefault(cid, []).append(h)
+    if not chains:
+        return []
+    lines = ["## Chain forest (foundation thread structure)"]
+    for _cid, rows in chains.items():
+        rows_sorted = sorted(
+            rows, key=lambda r: (r.get("parent_id") is not None, r["id"])
+        )
+        for r in rows_sorted:
+            depth = 0
+            cur = r.get("parent_id")
+            seen = set()
+            while cur is not None and cur not in seen:
+                seen.add(cur)
+                depth += 1
+                parent = next((x for x in rows if x["id"] == cur), None)
+                if parent is None:
+                    break
+                cur = parent.get("parent_id")
+            indent = "  " * (1 + depth)
+            marker = "├─" if r.get("parent_id") else "·"
+            lines.append(
+                f"{indent}{marker} [{r['id']}] {r['treatment']} → {r['outcome']} "
+                f"({r['estimand_class']}) sens={r.get('sensitivity_verdict', '?')}"
+            )
+    return lines
+
+
+def _render_decision_ledger_summary(protocol: StudyProtocol) -> list[str]:
+    if not protocol.decision_ledger:
+        return []
+    seen_methods: dict[str, int] = {}
+    for d in protocol.decision_ledger:
+        chose = getattr(d, "chose", "") or ""
+        if " via " in chose:
+            method = chose.split(" via ", 1)[-1]
+            seen_methods[method] = seen_methods.get(method, 0) + 1
+    if not seen_methods:
+        return []
+    lines = ["## Prior estimator choices (decision ledger)"]
+    for m, n in sorted(seen_methods.items(), key=lambda kv: -kv[1]):
+        lines.append(f"  - {m}: used {n} time(s)")
+    return lines
+
+
 def _build_critic_prompt(
     protocol: StudyProtocol,
     candidates: list[CandidateExperiment],
@@ -502,17 +647,16 @@ def _build_critic_prompt(
     parts: list[str] = []
     parts.append(_dataset_context_block(protocol))
     parts.append("")
-    parts.append("## Completed experiments")
-    if history:
-        for i, h in enumerate(history, 1):
-            parts.append(
-                f"  [{i}] {h['id']}: {h['treatment']} → {h['outcome']} "
-                f"({h['estimand_class']}) point={h['point_estimate']:+.4f} "
-                f"sensitivity={h.get('sensitivity_verdict', '?')}"
-            )
-    else:
-        parts.append("  (none — this is the first iteration)")
+    parts.extend(_render_history_block(history))
     parts.append("")
+    forest = _render_chain_forest(history)
+    if forest:
+        parts.extend(forest)
+        parts.append("")
+    ledger = _render_decision_ledger_summary(protocol)
+    if ledger:
+        parts.extend(ledger)
+        parts.append("")
     parts.append("## Candidates under review")
     for c in candidates:
         parts.append(
@@ -579,9 +723,9 @@ def _plan_candidate_queue(
     config: LoopConfig,
 ) -> CandidateQueue:
     prompt = _build_planner_prompt(protocol, config)
-    system = _PLANNER_SYSTEM.replace("{CATALOG_TABLE}", catalog_markdown()).replace(
-        "{QUEUE_SIZE}", str(config.candidate_queue_size)
-    )
+    system = _PLANNER_SYSTEM.replace(
+        "{CATALOG_TABLE}", catalog_markdown(flags=set(protocol.flags))
+    ).replace("{QUEUE_SIZE}", str(config.candidate_queue_size))
     resp = client.parse(
         prompt=prompt,
         schema=CandidateQueue,
@@ -601,7 +745,9 @@ def _critic_review(
     client: OllamaClient,
 ) -> CriticBatch:
     prompt = _build_critic_prompt(protocol, candidates, history)
-    system = _CRITIC_SYSTEM.replace("{CATALOG_TABLE}", catalog_markdown())
+    system = _CRITIC_SYSTEM.replace(
+        "{CATALOG_TABLE}", catalog_markdown(flags=set(protocol.flags))
+    )
     resp = client.parse(
         prompt=prompt,
         schema=CriticBatch,
@@ -623,7 +769,7 @@ def _foundation_followup_proposal(
 ) -> NextExperiment:
     prompt = _build_foundation_prompt(protocol, parent_walk, chain, history)
     system = _FOUNDATION_FOLLOWUP_SYSTEM.replace(
-        "{CATALOG_TABLE}", catalog_markdown()
+        "{CATALOG_TABLE}", catalog_markdown(flags=set(protocol.flags))
     )
     resp = client.parse(
         prompt=prompt,
@@ -665,6 +811,77 @@ def _build_graph_for_proposal(
         roles[candidate.instrument] = VariableRole.INSTRUMENT
         edges.append((candidate.instrument, candidate.treatment))
     return CausalGraph.from_edge_list(edges, roles=roles)
+
+
+def _is_duplicate_followup(
+    candidate: CandidateExperiment,
+    *,
+    completed: list[RoadmapWalk],
+    pending: list[tuple[CandidateExperiment, str | None, str]],
+    parent_estimator_id: str | None,
+) -> bool:
+    """Reject a pending follow-up that would re-run a (T, Y, estimand,
+    modifiers) tuple already in the completed history or already queued.
+
+    A followup is a duplicate if **all** of these match a prior walk
+    (or another pending followup):
+
+      - treatment
+      - outcome
+      - estimand_class
+      - modifiers (set equality)
+      - AND its ``recommended_method`` collides with the prior walk's
+        actual estimator family (so a same-T/Y/estimand swap is
+        permitted iff the estimator family is genuinely different).
+
+    This is what was missing on the lalonde smoke test: 5 identical
+    re-runs of (treat, re78, ATE) under the same DML estimator.
+    """
+    target_t = (candidate.treatment or "").strip()
+    target_y = (candidate.outcome or "").strip()
+    target_klass = (candidate.estimand_class or "").upper()
+    target_mods = frozenset(candidate.modifiers or ())
+    target_family = _classify_estimator_family(candidate.recommended_method)
+
+    def _matches(
+        other_t: str,
+        other_y: str,
+        other_klass: str,
+        other_mods: frozenset[str],
+        other_estimator_id: str | None,
+    ) -> bool:
+        if (target_t, target_y, target_klass, target_mods) != (
+            other_t,
+            other_y,
+            other_klass,
+            other_mods,
+        ):
+            return False
+        other_family = _classify_estimator_family(other_estimator_id)
+        # Same T/Y/estimand/modifiers AND same estimator family → duplicate.
+        return target_family == other_family
+
+    for w in completed:
+        if not w.q3_estimand or not w.q7_estimates:
+            continue
+        if _matches(
+            w.q3_estimand.treatment or "",
+            w.q3_estimand.outcome or "",
+            w.q3_estimand.klass.value.upper(),
+            frozenset(w.q3_estimand.modifiers or ()),
+            w.q7_estimates[-1].estimator_id,
+        ):
+            return True
+    for pcand, _chain, _parent in pending:
+        if _matches(
+            pcand.treatment or "",
+            pcand.outcome or "",
+            (pcand.estimand_class or "").upper(),
+            frozenset(pcand.modifiers or ()),
+            pcand.recommended_method,
+        ):
+            return True
+    return False
 
 
 def _outcome_dtype_for(protocol: StudyProtocol, outcome: str) -> str:
@@ -835,11 +1052,82 @@ def _run_one_experiment(
     walk.sensitivity_verdict = verdict_color
     walk.q8_interpretation = sensitivity_rationale
 
+    # Auto-fire tipping-point analysis when verdict is yellow OR red.
+    # The tipping point asks: how strong would an unmeasured confounder
+    # need to be to render the effect non-significant? That number lives
+    # on the walk's q8 diagnostics for the synthesis layer to reference.
+    tipping_info: dict[str, Any] | None = None
+    if verdict_color in {"yellow", "red"} and result.se is not None and result.se > 0:
+        try:
+            from causalrag.estimators.rbridge.sensitivity_r import tipping_point as _tipping_point
+
+            n_treated = int(
+                (df[candidate.treatment] > df[candidate.treatment].median()).sum()
+                if candidate.outcome in df.columns and candidate.treatment in df.columns
+                else result.n_used // 2
+            )
+            n_untreated = result.n_used - n_treated
+            tipping_info = _tipping_point(
+                estimate=result.point_estimate,
+                se=result.se,
+                n_treated=max(n_treated, 1),
+                n_untreated=max(n_untreated, 1),
+            )
+        except Exception as e:  # noqa: BLE001 — tipping is best-effort
+            tipping_info = {"error": f"{type(e).__name__}: {e}"}
+
+    # Auto-fire a negative-control outcome placebo if any candidate
+    # negative control was named in the discovery brief.
+    negative_control_info: dict[str, Any] | None = None
+    if verdict_color in {"yellow", "red"} and protocol.discovery is not None:
+        # Look at brief domain text for negative-control mentions
+        from causalrag.core.roles import VariableRole
+
+        neg_control_cols = [
+            v.name
+            for v in protocol.discovery.columns
+            if v.role is VariableRole.AUXILIARY
+            and v.name in df.columns
+            and v.name not in {candidate.treatment, candidate.outcome}
+        ]
+        if neg_control_cols:
+            try:
+                import numpy as np
+                from scipy.stats import pearsonr
+
+                T = df[candidate.treatment].dropna()
+                rows = []
+                for col in neg_control_cols[:3]:
+                    Y_neg = df[col].dropna()
+                    aligned = pd.concat([T, Y_neg], axis=1).dropna()
+                    if len(aligned) < 30:
+                        continue
+                    r, p = pearsonr(aligned.iloc[:, 0], aligned.iloc[:, 1])
+                    rows.append({"negative_control": col, "raw_corr": float(r), "p": float(p)})
+                if rows:
+                    n_significant = sum(1 for r in rows if r["p"] < 0.05)
+                    negative_control_info = {
+                        "scanned": rows,
+                        "n_significant_at_0.05": n_significant,
+                        "interpretation": (
+                            "Negative-control outcomes should NOT correlate with treatment "
+                            "if the identification is clean. Any p<0.05 here is a red flag."
+                            if n_significant > 0
+                            else "No negative-control outcome correlated with treatment — good sign."
+                        ),
+                    }
+            except Exception as e:  # noqa: BLE001
+                negative_control_info = {"error": f"{type(e).__name__}: {e}"}
+
     # Surface upstream diagnostics into the history row so the next LLM
     # call can see them.
     diag = result.diagnostics or {}
     overlap = diag.get("overlap", {}) if isinstance(diag, dict) else {}
     refutations_info = diag.get("refutations", {}) if isinstance(diag, dict) else {}
+    if tipping_info is not None and isinstance(diag, dict):
+        diag.setdefault("tipping_point", tipping_info)
+    if negative_control_info is not None and isinstance(diag, dict):
+        diag.setdefault("negative_control_scan", negative_control_info)
 
     history_row = {
         "id": walk.hypothesis_id,
@@ -912,38 +1200,135 @@ def _should_fire_foundation_child(
     if est.se is None or est.se <= 0:
         return False, "parent has no SE — can't judge significance"
     t_stat = abs(est.point_estimate / est.se)
-    if parent_walk.sensitivity_verdict == "red":
-        # Pipeline auto-schedules robustness child separately; we don't
-        # also fire a "drill deeper" follow-up on a red parent — the
-        # signal isn't trustworthy enough to build on.
-        return False, "red sensitivity — robustness child auto-scheduled instead"
     if t_stat < 1.96:
         return False, f"parent not significant (|t|={t_stat:.2f} < 1.96)"
+    # Note: red sensitivity used to short-circuit substantive follow-ups
+    # here, leaving only the robustness re-run. That produced identical
+    # repeated experiments on the lalonde smoke test. Now: red parents
+    # still fire substantive follow-ups (the auto-robustness candidate
+    # runs separately, and the synthesis-layer confidence override stops
+    # the LLM from over-claiming on the fragile foundation).
+    if parent_walk.sensitivity_verdict == "red":
+        return True, "red sensitivity — substantive follow-up allowed AND robustness child"
     return True, "significant parent + budgets ok"
 
 
+# Mapping from a parent estimator's "family" → the preferred robustness
+# family to swap to. Order within each tuple is the trial order; the
+# first one actually registered + valid is chosen.
+_ROBUSTNESS_SWAP: dict[str, tuple[str, ...]] = {
+    "dml": (
+        "rbridge.weightit",
+        "rbridge.matchit",
+        "rbridge.bartcause",
+        "python.bart.dml",
+        "python.dr.dr_learner",
+        "python.meta.x_learner",
+    ),
+    "weight": (
+        "rbridge.matchit",
+        "python.dml.linear",
+        "rbridge.bartcause",
+        "python.dr.dr_learner",
+    ),
+    "match": (
+        "rbridge.weightit",
+        "python.dml.linear",
+        "rbridge.bartcause",
+        "python.dr.dr_learner",
+    ),
+    "forest": (
+        "python.dml.linear",
+        "rbridge.weightit",
+        "python.dr.dr_learner",
+    ),
+    "bart": (
+        "python.dml.linear",
+        "rbridge.weightit",
+        "python.dr.dr_learner",
+    ),
+    "lmtp": (
+        "rbridge.weightit",
+        "python.dml.linear",
+        "python.dr.dr_learner",
+    ),
+    "ols": (
+        "python.dml.linear",
+        "rbridge.weightit",
+        "python.dr.dr_learner",
+    ),
+    "_default": (
+        "rbridge.weightit",
+        "python.dr.dr_learner",
+        "rbridge.bartcause",
+        "python.bart.dml",
+        "rbridge.matchit",
+    ),
+}
+
+
+def _classify_estimator_family(estimator_id: str | None) -> str:
+    eid = (estimator_id or "").lower()
+    for fam in ("dml", "weightit", "matchit", "forest", "bart", "lmtp", "ols"):
+        if fam in eid:
+            return "weight" if fam == "weightit" else "match" if fam == "matchit" else fam
+    return "_default"
+
+
+def _pick_robustness_method(
+    parent_estimator_id: str | None, estimand_class: str
+) -> str | None:
+    """Return a different-family estimator id that is (a) registered in the
+    current process and (b) supports the parent's estimand. None if no
+    such swap is possible — caller should refuse to schedule.
+    """
+    from causalrag.core.registry import get_registry
+
+    fam = _classify_estimator_family(parent_estimator_id)
+    candidates = _ROBUSTNESS_SWAP.get(fam, _ROBUSTNESS_SWAP["_default"])
+    reg = get_registry()
+    target_estimand = estimand_class.upper()
+    for cand in candidates:
+        if cand == parent_estimator_id:
+            continue
+        try:
+            entry = reg.get(cand)
+        except KeyError:
+            continue
+        if target_estimand not in entry.supported_estimands:
+            continue
+        return cand
+    return None
+
+
 def _auto_robustness_candidate(
-    *, parent_walk: RoadmapWalk, parent_candidate: CandidateExperiment
+    *,
+    parent_walk: RoadmapWalk,
+    parent_candidate: CandidateExperiment,
+    parent_estimator_id: str | None,
 ) -> CandidateExperiment | None:
     """Synthesize a deterministic robustness follow-up when the parent
-    came back RED. Currently: an ATT (vs ATE) check or a CATE-with-
-    weighting variant. Returns None if no sensible robustness can be
-    synthesized."""
+    came back RED.
+
+    The candidate must use a *different* estimator family from the
+    parent — otherwise re-running on the same data produces the same
+    number and adds no information (the lalonde smoke test exposed
+    this). Returns None if no valid swap exists in the current
+    registry.
+    """
     if not parent_walk.q3_estimand:
         return None
-    # Cheapest informative follow-up: re-run the same (T, Y) under a
-    # weighting estimator with rich SuperLearner if the original used
-    # DML, or vice versa. The deterministic scorer will rank it
-    # accordingly.
     parent_klass = parent_walk.q3_estimand.klass.value
+    swap_method = _pick_robustness_method(parent_estimator_id, parent_klass)
+    if swap_method is None:
+        return None
     return CandidateExperiment(
         candidate_id=f"robustness-{parent_walk.hypothesis_id}",
         research_question=(
-            f"Robustness re-check of {parent_walk.hypothesis_id}: "
-            f"does the {parent_klass} effect of "
-            f"{parent_walk.q3_estimand.treatment} on "
-            f"{parent_walk.q3_estimand.outcome} survive a different "
-            f"identification strategy?"
+            f"Robustness re-check of {parent_walk.hypothesis_id}: does the "
+            f"{parent_klass} effect of {parent_walk.q3_estimand.treatment} "
+            f"on {parent_walk.q3_estimand.outcome} survive a different "
+            f"identification strategy ({swap_method})?"
         ),
         treatment=parent_walk.q3_estimand.treatment,
         outcome=parent_walk.q3_estimand.outcome,
@@ -951,19 +1336,17 @@ def _auto_robustness_candidate(
         modifiers=list(parent_walk.q3_estimand.modifiers or ()),
         mediator=parent_walk.q3_estimand.mediator,
         instrument=parent_walk.q3_estimand.instrument,
-        recommended_method=(
-            "rbridge.weightit"
-            if parent_candidate.recommended_method and "dml" in parent_candidate.recommended_method.lower()
-            else "python.dml.linear"
-        ),
+        recommended_method=swap_method,
         impact_rationale=(
             "Parent finding had RED sensitivity verdict; an independent "
-            "estimator with different identification assumptions is the "
-            "right robustness check."
+            "estimator from a different family is the right robustness "
+            "check. If both estimators agree the red flag is partially "
+            "mitigated; if they disagree the parent finding is fragile."
         ),
         identifiability_rationale=(
-            "Same data, different identification — if both estimators "
-            "agree the parent's red flag is partially mitigated."
+            "Same data, different identification assumptions — the parent "
+            f"used {parent_estimator_id or 'an unknown estimator'}; this "
+            f"swap to {swap_method} stresses the parent's assumptions."
         ),
         power_rationale="Same sample as parent; power equivalent.",
         impact_hint=0.55,
@@ -1351,16 +1734,50 @@ def run_master_loop(
             payload=row,
         )
 
-        # Auto-fire robustness child on RED sensitivity
+        # Auto-fire robustness child on RED sensitivity.
+        # The candidate MUST use a different estimator family, OR a
+        # different estimand class on the same (T,Y) — otherwise it is
+        # just an identical re-run.
         if (
             config.auto_fire_robustness_on_red
             and walk.sensitivity_verdict == "red"
             and len(completed) < config.n_experiments
         ):
-            robustness_cand = _auto_robustness_candidate(
-                parent_walk=walk, parent_candidate=next_candidate
+            parent_estimator_id = (
+                walk.q7_estimates[-1].estimator_id
+                if walk.q7_estimates
+                else None
             )
-            if robustness_cand is not None:
+            robustness_cand = _auto_robustness_candidate(
+                parent_walk=walk,
+                parent_candidate=next_candidate,
+                parent_estimator_id=parent_estimator_id,
+            )
+            if robustness_cand is None:
+                yield LoopEvent(
+                    kind="log",
+                    phase="auto",
+                    message=(
+                        f"red sensitivity on {walk.hypothesis_id} but no "
+                        "different-family estimator is registered — robustness "
+                        "child not scheduled."
+                    ),
+                )
+            elif _is_duplicate_followup(
+                robustness_cand,
+                completed=completed,
+                pending=pending_followups,
+                parent_estimator_id=parent_estimator_id,
+            ):
+                yield LoopEvent(
+                    kind="log",
+                    phase="auto",
+                    message=(
+                        f"robustness candidate for {walk.hypothesis_id} would "
+                        "duplicate a prior experiment — skipping."
+                    ),
+                )
+            else:
                 scored[robustness_cand.candidate_id] = score_candidate(
                     robustness_cand, protocol=protocol, completed=completed
                 )
@@ -1372,7 +1789,8 @@ def run_master_loop(
                     phase="auto",
                     message=(
                         f"auto-scheduling robustness child for "
-                        f"{walk.hypothesis_id} (red sensitivity)"
+                        f"{walk.hypothesis_id} (red sensitivity, method "
+                        f"swap → {robustness_cand.recommended_method})"
                     ),
                 )
 
@@ -1413,20 +1831,35 @@ def run_master_loop(
                         power_rationale=followup_proposal.power_rationale
                         or "(same sample as parent)",
                     )
-                    scored[followup_cand.candidate_id] = score_candidate(
-                        followup_cand, protocol=protocol, completed=completed
-                    )
-                    pending_followups.append(
-                        (followup_cand, chain.chain_id, walk.hypothesis_id)
-                    )
-                    yield LoopEvent(
-                        kind="log",
-                        phase="auto",
-                        message=(
-                            f"scheduled foundation child of {walk.hypothesis_id} "
-                            f"(chain {chain.chain_id}, depth {chain.depth})"
-                        ),
-                    )
+                    if _is_duplicate_followup(
+                        followup_cand,
+                        completed=completed,
+                        pending=pending_followups,
+                        parent_estimator_id=None,
+                    ):
+                        yield LoopEvent(
+                            kind="log",
+                            phase="auto",
+                            message=(
+                                f"foundation candidate for {walk.hypothesis_id} would "
+                                "duplicate a prior experiment — skipping."
+                            ),
+                        )
+                    else:
+                        scored[followup_cand.candidate_id] = score_candidate(
+                            followup_cand, protocol=protocol, completed=completed
+                        )
+                        pending_followups.append(
+                            (followup_cand, chain.chain_id, walk.hypothesis_id)
+                        )
+                        yield LoopEvent(
+                            kind="log",
+                            phase="auto",
+                            message=(
+                                f"scheduled foundation child of {walk.hypothesis_id} "
+                                f"(chain {chain.chain_id}, depth {chain.depth})"
+                            ),
+                        )
             except Exception as e:
                 yield LoopEvent(
                     kind="log",
