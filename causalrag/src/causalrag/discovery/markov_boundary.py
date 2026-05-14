@@ -47,6 +47,10 @@ class MarkovBoundaryReport:
     alpha: float
     test: str
     notes: list[str]
+    # Phase 2 / 3 — optional fields
+    alternative_mbs: list[list[str]] | None = None  # k-1 distinct alternative MBs
+    stability_scores: dict[str, float] | None = None  # per-variable selection freq
+    bootstrap_iterations: int | None = None  # B from stability subsampling
 
 
 def _partial_correlation_pvalue(
@@ -223,4 +227,330 @@ def discover_markov_boundary(
     )
 
 
-__all__ = ["MarkovBoundaryReport", "discover_markov_boundary"]
+# ─── Phase 2 — multiple-MB triangulation ──────────────────────────────────
+
+
+def _verify_mb_on_original(
+    df: pd.DataFrame, target: str, mb: list[str], alpha: float
+) -> bool:
+    """Check that ``mb`` satisfies the MB definition on the original data.
+
+    For every variable v ∉ MB ∪ {target}, test whether v ⊥ target | MB.
+    If any v fails (small p), this MB is not valid on the original
+    distribution and should be rejected. Used as the TIE*-style verify
+    step on candidate alternative MBs.
+    """
+    work = df.select_dtypes(include="number").dropna()
+    if target not in work.columns:
+        return False
+    n = len(work)
+    y = work[target].to_numpy(dtype=float)
+    z = work[mb].to_numpy(dtype=float) if mb else None
+    others = [c for c in work.columns if c not in set(mb) and c != target]
+    # Bonferroni-correct so multiple-testing across the held-out set doesn't
+    # spuriously reject too aggressively.
+    bonf_alpha = alpha / max(len(others), 1)
+    for v in others:
+        x = work[v].to_numpy(dtype=float)
+        p = _partial_correlation_pvalue(x, y, z, n)
+        if p < bonf_alpha:
+            return False
+    return True
+
+
+def _kiamb_one_run(
+    df: pd.DataFrame,
+    target: str,
+    alpha: float,
+    max_size: int | None,
+    rng: np.random.Generator,
+    randomness: float = 0.5,
+) -> list[str]:
+    """Stochastic IAMB (KIAMB-style).
+
+    During the grow phase, instead of always picking the most-associated
+    covariate, sample from the top-``ceil(randomness × |remaining|)``
+    candidates. ``randomness=0`` → deterministic IAMB (fastest single MB);
+    ``randomness=1`` → uniform random over surviving candidates (most
+    diverse). Returns one (possibly different) MB per call.
+    """
+    work = df.select_dtypes(include="number").dropna()
+    if target not in work.columns:
+        return []
+    cols = [c for c in work.columns if c != target]
+    n = len(work)
+    y = work[target].to_numpy(dtype=float)
+    mb: list[str] = []
+    cap = max_size if max_size is not None else len(cols)
+
+    changed = True
+    while changed and len(mb) < cap:
+        changed = False
+        # Score every remaining covariate
+        candidates: list[tuple[float, str]] = []
+        for c in cols:
+            if c in mb:
+                continue
+            x = work[c].to_numpy(dtype=float)
+            z = work[mb].to_numpy(dtype=float) if mb else None
+            p = _partial_correlation_pvalue(x, y, z, n)
+            if p < alpha:
+                candidates.append((p, c))
+        if not candidates:
+            break
+        # Sort ascending by p (most-associated first)
+        candidates.sort(key=lambda t: t[0])
+        # KIAMB: sample uniformly from the top-K
+        top_k = max(1, int(math.ceil(randomness * len(candidates))))
+        idx = int(rng.integers(0, top_k))
+        mb.append(candidates[idx][1])
+        changed = True
+
+    # SHRINK (same as deterministic IAMB)
+    changed = True
+    while changed:
+        changed = False
+        for c in list(mb):
+            others = [m for m in mb if m != c]
+            x = work[c].to_numpy(dtype=float)
+            z = work[others].to_numpy(dtype=float) if others else None
+            p = _partial_correlation_pvalue(x, y, z, n)
+            if p >= alpha:
+                mb.remove(c)
+                changed = True
+                break
+    return mb
+
+
+def discover_multiple_mbs(
+    df: pd.DataFrame,
+    *,
+    target: str,
+    k: int = 3,
+    alpha: float = 0.05,
+    randomness: float = 0.5,
+    seed: int = 42,
+    verify_on_original: bool = True,
+    max_size: int | None = None,
+) -> MarkovBoundaryReport:
+    """Discover up to ``k`` distinct, verified Markov boundaries of ``target``.
+
+    Uses stochastic IAMB (KIAMB) with multiple random restarts.  Each
+    candidate MB is verified against the original distribution (the
+    TIE* validation step) — candidates that look like an MB on a
+    permuted scan but fail the conditional-independence definition on
+    the original data get rejected.
+
+    Returns one :class:`MarkovBoundaryReport` whose ``mb`` is the
+    primary (deterministic) MB and whose ``alternative_mbs`` lists
+    the additional verified MBs found.  When only one MB survives,
+    ``alternative_mbs`` is empty.
+
+    This is Phase 2 of the multi-MB roadmap — it does NOT pretend to
+    be a full TIE* re-implementation. It surfaces information-equivalent
+    MBs when they exist (faithfulness violations from multicollinear
+    pathways) but won't find every alternative in pathological
+    distributions. For high-dim genomics (n ≪ p) the caller should set
+    ``verify_on_original=True`` and combine with stability subsampling
+    via :func:`discover_stable_mb`.
+    """
+    if target not in df.columns:
+        raise ValueError(f"target {target!r} not in df columns")
+    work = df.select_dtypes(include="number").dropna()
+    if target not in work.columns:
+        return MarkovBoundaryReport(
+            target=target,
+            mb=[],
+            method="kiamb (python)",
+            backend="python.iamb",
+            n=0,
+            alpha=alpha,
+            test="fisher_z",
+            notes=[
+                f"target {target!r} non-numeric; multi-MB requires bnlearn "
+                "for non-numeric targets."
+            ],
+            alternative_mbs=[],
+        )
+
+    rng = np.random.default_rng(seed)
+
+    # Run 1 — deterministic (randomness=0) to anchor the primary MB
+    primary_mb = _python_iamb(work, target=target, alpha=alpha, max_size=max_size)
+    found: list[list[str]] = [primary_mb] if primary_mb else []
+
+    # Run 2..k — stochastic restarts
+    attempts = 0
+    max_attempts = max(k * 4, 12)
+    while len(found) < k and attempts < max_attempts:
+        attempts += 1
+        candidate = _kiamb_one_run(
+            work,
+            target=target,
+            alpha=alpha,
+            max_size=max_size,
+            rng=rng,
+            randomness=randomness,
+        )
+        if not candidate:
+            continue
+        # Skip if equivalent to a previously-found MB (set equality)
+        if any(set(candidate) == set(prev) for prev in found):
+            continue
+        # Verify on original distribution
+        if verify_on_original and not _verify_mb_on_original(
+            work, target=target, mb=candidate, alpha=alpha
+        ):
+            continue
+        found.append(candidate)
+
+    return MarkovBoundaryReport(
+        target=target,
+        mb=found[0] if found else [],
+        method="kiamb (python)",
+        backend="python.iamb",
+        n=int(len(work)),
+        alpha=alpha,
+        test="fisher_z",
+        notes=[
+            f"requested k={k}, found {len(found)} distinct MBs in {attempts} attempts"
+        ],
+        alternative_mbs=[mb for mb in found[1:]],
+    )
+
+
+# ─── Phase 3 — stability subsampling + FDR ────────────────────────────────
+
+
+def discover_stable_mb(
+    df: pd.DataFrame,
+    *,
+    target: str,
+    bootstrap_iterations: int = 20,
+    subsample_fraction: float = 0.8,
+    stability_threshold: float = 0.6,
+    alpha: float = 0.05,
+    seed: int = 42,
+    max_size: int | None = None,
+    method: str = "iamb.fdr",
+    prefer_bnlearn: bool = True,
+) -> MarkovBoundaryReport:
+    """Stability-selected Markov boundary via bootstrap subsampling.
+
+    Runs ``bootstrap_iterations`` IAMB passes on subsamples (size
+    ``subsample_fraction × n``, drawn with replacement). Counts how
+    often each candidate variable appears in the resulting MBs. Keeps
+    variables whose selection frequency is at least
+    ``stability_threshold``. Returns the stability-selected MB plus
+    per-variable selection frequencies.
+
+    Designed for n ≪ p / high-dim regimes (oncology genomics, brain
+    imaging, financial feature sets) where a single IAMB pass is too
+    fragile. When ``prefer_bnlearn=True`` and ``method='iamb.fdr'`` the
+    underlying CI test is FDR-controlled (Pena 2008), which further
+    reins in false discoveries under multiple testing.
+
+    Cost is roughly ``bootstrap_iterations × cost(single IAMB)``.
+    """
+    if target not in df.columns:
+        raise ValueError(f"target {target!r} not in df columns")
+    work = df.select_dtypes(include="number").dropna()
+    if target not in work.columns:
+        return MarkovBoundaryReport(
+            target=target,
+            mb=[],
+            method=f"stability+{method}",
+            backend="none",
+            n=0,
+            alpha=alpha,
+            test="n/a",
+            notes=[f"target {target!r} is non-numeric — stability MB skipped"],
+            stability_scores={},
+            bootstrap_iterations=0,
+        )
+
+    rng = np.random.default_rng(seed)
+    n = len(work)
+    sub_n = max(int(subsample_fraction * n), 30)
+    counts: dict[str, int] = {}
+    successes = 0
+    used_backend = "python.iamb"
+    used_test = "fisher_z"
+
+    for b in range(bootstrap_iterations):
+        idx = rng.choice(n, size=sub_n, replace=True)
+        sub = work.iloc[idx].reset_index(drop=True)
+        try:
+            if prefer_bnlearn:
+                from causalrag.estimators.rbridge.discovery_r import (
+                    discover_markov_boundary as r_mb,
+                )
+
+                r_result = r_mb(sub, target=target, method=method, alpha=alpha)
+                mb_b = list(r_result["mb"])
+                used_backend = "bnlearn"
+                used_test = str(r_result.get("test", "cor"))
+            else:
+                mb_b = _python_iamb(
+                    sub, target=target, alpha=alpha, max_size=max_size
+                )
+        except Exception as e:
+            logger.warning(
+                "bootstrap iter %d failed: %s — falling back to Python", b, e
+            )
+            try:
+                mb_b = _python_iamb(
+                    sub, target=target, alpha=alpha, max_size=max_size
+                )
+            except Exception:
+                continue
+        for c in mb_b:
+            counts[c] = counts.get(c, 0) + 1
+        successes += 1
+
+    if successes == 0:
+        return MarkovBoundaryReport(
+            target=target,
+            mb=[],
+            method=f"stability+{method}",
+            backend=used_backend,
+            n=int(n),
+            alpha=alpha,
+            test=used_test,
+            notes=["all bootstrap iterations failed"],
+            stability_scores={},
+            bootstrap_iterations=bootstrap_iterations,
+        )
+
+    scores = {c: counts.get(c, 0) / successes for c in counts}
+    stable = sorted(
+        [c for c, freq in scores.items() if freq >= stability_threshold],
+        key=lambda c: -scores[c],
+    )
+    if max_size is not None:
+        stable = stable[:max_size]
+
+    return MarkovBoundaryReport(
+        target=target,
+        mb=stable,
+        method=f"stability+{method}",
+        backend=used_backend,
+        n=int(n),
+        alpha=alpha,
+        test=used_test,
+        notes=[
+            f"B={successes}/{bootstrap_iterations} bootstraps succeeded, "
+            f"subsample_frac={subsample_fraction}, "
+            f"stability_threshold={stability_threshold}"
+        ],
+        stability_scores=scores,
+        bootstrap_iterations=successes,
+    )
+
+
+__all__ = [
+    "MarkovBoundaryReport",
+    "discover_markov_boundary",
+    "discover_multiple_mbs",
+    "discover_stable_mb",
+]

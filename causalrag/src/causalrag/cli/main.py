@@ -1106,6 +1106,30 @@ def auto(
     candidate_queue_size: Annotated[int, typer.Option("--queue-size")] = 18,
     propose_k: Annotated[int, typer.Option("--propose-k")] = 3,
     critic: Annotated[bool, typer.Option("--critic/--no-critic", help="Enable the critic agent.")] = True,
+    multiple_mb: Annotated[
+        int,
+        typer.Option(
+            "--multiple-mb",
+            help="Discover up to N distinct Markov boundaries per target (Phase 2). 1 = single MB cross-check.",
+        ),
+    ] = 1,
+    high_dim_mode: Annotated[
+        bool,
+        typer.Option(
+            "--high-dim-mode",
+            help="Phase 3: stability subsampling + iamb.fdr for the MB layer. For n ≪ p (genomics, brain imaging).",
+        ),
+    ] = False,
+    mb_bootstraps: Annotated[
+        int, typer.Option("--mb-bootstraps", help="Bootstrap iterations for stability subsampling.")
+    ] = 20,
+    mb_stability: Annotated[
+        float,
+        typer.Option(
+            "--mb-stability",
+            help="Stability-selection frequency threshold (0-1) — variables kept iff selected in ≥ this fraction of bootstraps.",
+        ),
+    ] = 0.6,
     question: Annotated[
         str | None, typer.Option("--question", "-q", help="One-sentence research question.")
     ] = None,
@@ -1165,11 +1189,23 @@ def auto(
         candidate_queue_size=candidate_queue_size,
         propose_k=propose_k,
         critic_enabled=critic,
+        mb_k=multiple_mb,
+        high_dim_mode=high_dim_mode,
+        mb_bootstrap_iterations=mb_bootstraps,
+        mb_stability_threshold=mb_stability,
     )
 
+    mb_descr = (
+        f"high-dim (stability×{mb_bootstraps}, iamb.fdr)"
+        if high_dim_mode
+        else f"multi-MB k={multiple_mb}"
+        if multiple_mb > 1
+        else "single-MB cross-check"
+    )
     console.print(
         f"[dim]/auto · K={experiments} · foundation={foundation} · "
-        f"discovery={slots.discovery} · expert={slots.hypothesize}[/dim]"
+        f"discovery={slots.discovery} · expert={slots.hypothesize} · "
+        f"MB={mb_descr}[/dim]"
     )
 
     for event in run_master_loop(

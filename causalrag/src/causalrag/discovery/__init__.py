@@ -82,6 +82,10 @@ def run_discovery(
     treatment: str | None = None,
     outcome: str | None = None,
     k_dags: int = 3,
+    mb_k: int = 1,
+    high_dim_mode: bool = False,
+    mb_bootstrap_iterations: int = 20,
+    mb_stability_threshold: float = 0.6,
 ) -> DiscoveryResult:
     """Run Stages 1a → 1e end-to-end.
 
@@ -184,11 +188,29 @@ def run_discovery(
         try:
             from causalrag.discovery.markov_boundary import (
                 discover_markov_boundary,
+                discover_multiple_mbs,
+                discover_stable_mb,
             )
 
             for tgt in mb_targets:
                 try:
-                    report = discover_markov_boundary(df, target=tgt)
+                    if high_dim_mode:
+                        # Phase 3: stability subsampling + iamb.fdr (R when available)
+                        report = discover_stable_mb(
+                            df,
+                            target=tgt,
+                            bootstrap_iterations=mb_bootstrap_iterations,
+                            stability_threshold=mb_stability_threshold,
+                            method="iamb.fdr",
+                        )
+                    elif mb_k > 1:
+                        # Phase 2: stochastic multi-MB
+                        report = discover_multiple_mbs(
+                            df, target=tgt, k=mb_k
+                        )
+                    else:
+                        # Phase 1: single MB cross-check
+                        report = discover_markov_boundary(df, target=tgt)
                 except Exception as e:
                     markov_boundaries.append(
                         {
@@ -213,24 +235,30 @@ def run_discovery(
                 in_inv_not_mb = sorted(
                     investigator_confounders - mb_set - exclude_from_diff
                 )
-                markov_boundaries.append(
-                    {
-                        "target": tgt,
-                        "mb": report.mb,
-                        "backend": report.backend,
-                        "method": report.method,
-                        "n": report.n,
-                        "test": report.test,
-                        "notes": report.notes,
-                        "disagreement_with_investigator": {
-                            "stats_says_in_mb_investigator_didnt_label_confounder": in_mb_not_inv,
-                            "investigator_called_confounder_stats_dropped": in_inv_not_mb,
-                        },
-                        "agreement_with_investigator": sorted(
-                            mb_set & investigator_confounders
-                        ),
-                    }
-                )
+                entry: dict[str, Any] = {
+                    "target": tgt,
+                    "mb": report.mb,
+                    "backend": report.backend,
+                    "method": report.method,
+                    "n": report.n,
+                    "test": report.test,
+                    "notes": report.notes,
+                    "disagreement_with_investigator": {
+                        "stats_says_in_mb_investigator_didnt_label_confounder": in_mb_not_inv,
+                        "investigator_called_confounder_stats_dropped": in_inv_not_mb,
+                    },
+                    "agreement_with_investigator": sorted(
+                        mb_set & investigator_confounders
+                    ),
+                }
+                # Phase 2 fields
+                if report.alternative_mbs:
+                    entry["alternative_mbs"] = [list(m) for m in report.alternative_mbs]
+                # Phase 3 fields
+                if report.stability_scores is not None:
+                    entry["stability_scores"] = report.stability_scores
+                    entry["bootstrap_iterations"] = report.bootstrap_iterations
+                markov_boundaries.append(entry)
         except Exception as e:
             # Whole-feature failure (import error etc.) — log and continue.
             logger.warning("Markov-boundary phase skipped: %s", e)

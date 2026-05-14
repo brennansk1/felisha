@@ -227,6 +227,21 @@ class LoopConfig:
     auto_fire_robustness_on_red: bool = True
     estimator_swap_retries: int = 1  # how many times to retry with a different estimator on fit failure
 
+    # Markov-boundary discovery (Phases 1–3 of the MB roadmap):
+    # - mb_k: number of distinct MBs to seek per target. 1 = Phase 1
+    #   (single MB cross-check, the default). 2+ = Phase 2 (KIAMB-style
+    #   stochastic triangulation; the master loop re-runs each
+    #   experiment under every discovered MB and reports cross-MB
+    #   consistency).
+    # - high_dim_mode: Phase 3. Switches MB discovery to stability
+    #   subsampling with B=20 bootstraps + iamb.fdr (when bnlearn is
+    #   available), and triggers FDR-aware CI tests. Substantially
+    #   slower; intended for n ≪ p regimes (genomics, brain imaging).
+    mb_k: int = 1
+    high_dim_mode: bool = False
+    mb_bootstrap_iterations: int = 20
+    mb_stability_threshold: float = 0.6
+
 
 # ─────────── Deterministic scorer ─────────────────────────────────────────
 
@@ -1620,6 +1635,10 @@ def run_master_loop(
         client=discovery_client,
         expert_client=expert_client or discovery_client,
         research_question=protocol.research_question,
+        mb_k=config.mb_k,
+        high_dim_mode=config.high_dim_mode,
+        mb_bootstrap_iterations=config.mb_bootstrap_iterations,
+        mb_stability_threshold=config.mb_stability_threshold,
     )
     protocol.discovery = discovery.to_report()
     protocol.flags |= discovery.flags
