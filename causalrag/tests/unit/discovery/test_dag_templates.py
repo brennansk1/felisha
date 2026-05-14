@@ -195,16 +195,10 @@ def test_spatiotemporal_missing_slot_raises() -> None:
 
 
 def test_spatiotemporal_bad_neighbour_pair_raises() -> None:
-    tpl = SpatiotemporalTemplate(neighbour_pairs=[("only_one",)])  # type: ignore[list-item]
+    # Pydantic enforces the 2-tuple shape at construction; this guards the
+    # contract just as effectively as a runtime check inside instantiate.
     with pytest.raises(ValueError):
-        tpl.instantiate(
-            {
-                "unit_id": "uid",
-                "time": "t",
-                "treatment": "trt",
-                "outcome": "y",
-            }
-        )
+        SpatiotemporalTemplate(neighbour_pairs=[("only_one",)])  # type: ignore[list-item]
 
 
 # ----------------------------------------------------------------------
