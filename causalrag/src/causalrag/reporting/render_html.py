@@ -296,12 +296,58 @@ def _walks_section(protocol: StudyProtocol) -> str:
         out.append("</tbody></table>")
     # Per-walk details
     for key, walk in protocol.roadmap_walks.items():
-        out.append(f"<details open><summary>{_e(key)}</summary>")
+        # Chain-linkage label for foundation children
+        chain_label = ""
+        if walk.parent_id:
+            chain_label = (
+                f" <span class='chip dim'>foundation of "
+                f"<code>{_e(walk.parent_id)}</code> · chain="
+                f"<code>{_e(walk.chain_id or '—')}</code></span>"
+            )
+        elif walk.chain_id:
+            chain_label = (
+                f" <span class='chip dim'>chain root · "
+                f"<code>{_e(walk.chain_id)}</code></span>"
+            )
+
+        out.append(f"<details open><summary>{_e(key)}{chain_label}</summary>")
         ident = walk.q5_identification or {}
         out.append("<div class='kv'>")
         out.append(f"<div class='k'>identification</div><div class='v'>{_e(ident.get('strategy', '—'))}</div>")
         out.append(f"<div class='k'>identifiable</div><div class='v'>{_e(ident.get('identifiable', '—'))}</div>")
         out.append(f"<div class='k'>adjustment set</div><div class='v'>{_e(', '.join(ident.get('adjustment_set', [])))}</div>")
+
+        # Identification narration (LLM-generated)
+        narration = ident.get("narration") if isinstance(ident, dict) else None
+        if isinstance(narration, dict):
+            if narration.get("strategy_explanation"):
+                out.append(
+                    f"<div class='k'>why this works</div>"
+                    f"<div class='v serif'>{_e(narration['strategy_explanation'])}</div>"
+                )
+            if narration.get("blocked_paths"):
+                bp = " · ".join(narration["blocked_paths"])
+                out.append(
+                    f"<div class='k'>blocked paths</div><div class='v'>{_e(bp)}</div>"
+                )
+            if narration.get("unblocked_paths"):
+                up = " · ".join(narration["unblocked_paths"])
+                out.append(
+                    f"<div class='k'>open backdoor paths</div>"
+                    f"<div class='v err'>{_e(up)}</div>"
+                )
+            if narration.get("analyst_assertions"):
+                out.append(
+                    "<div class='k'>analyst trusts</div><div class='v'>"
+                    + "; ".join(_e(a) for a in narration["analyst_assertions"])
+                    + "</div>"
+                )
+            if narration.get("confidence"):
+                out.append(
+                    f"<div class='k'>identification confidence</div>"
+                    f"<div class='v'>{_e(narration['confidence'])}</div>"
+                )
+
         if walk.q7_estimates:
             est = walk.q7_estimates[-1]
             out.append(f"<div class='k'>estimator</div><div class='v'>{_e(est.estimator_id)}</div>")
@@ -310,12 +356,86 @@ def _walks_section(protocol: StudyProtocol) -> str:
                 out.append(f"<div class='k'>95% CI</div><div class='v'>[{est.ci_low:+.4f}, {est.ci_high:+.4f}]</div>")
             if est.p_value is not None:
                 out.append(f"<div class='k'>p-value</div><div class='v'>{est.p_value:.4g}</div>")
+            # Adjusted p-value if multiple-testing applied
+            diag = est.diagnostics if isinstance(est.diagnostics, dict) else {}
+            if diag.get("adjusted_p_value") is not None:
+                adj_method = diag.get("adjustment_method", "")
+                out.append(
+                    f"<div class='k'>adjusted p ({_e(adj_method)})</div>"
+                    f"<div class='v'>{diag['adjusted_p_value']:.4g}</div>"
+                )
             out.append(f"<div class='k'>n used</div><div class='v'>{est.n_used}</div>")
             if est.refutations:
                 n_pass = est.refutations.get("n_passed", 0)
                 out.append(f"<div class='k'>refutations</div><div class='v'>{n_pass} / 3 passed</div>")
+
+            # Anomaly audit findings
+            audit = diag.get("anomaly_audit") if isinstance(diag, dict) else None
+            if isinstance(audit, dict):
+                flags = audit.get("flags") or []
+                rec = audit.get("recommendation", "accept")
+                if flags or rec != "accept":
+                    color_class = (
+                        "err" if rec == "disqualify"
+                        else "warn" if rec == "rerun_with_different_estimator"
+                        else "dim"
+                    )
+                    flag_str = ", ".join(flags) if flags else "(no flags)"
+                    out.append(
+                        f"<div class='k'>anomaly audit</div>"
+                        f"<div class='v {color_class}'>{_e(rec)} — {_e(flag_str)}</div>"
+                    )
+
+            # Sensitivity interpretation (LLM-translated)
+            interp = diag.get("sensitivity_interpretation") if isinstance(diag, dict) else None
+            if isinstance(interp, dict) and interp.get("plain_language"):
+                out.append(
+                    f"<div class='k'>sensitivity narrative</div>"
+                    f"<div class='v serif'>{_e(interp['plain_language'])}</div>"
+                )
+                if interp.get("plausibility_of_threshold_confounder"):
+                    out.append(
+                        f"<div class='k'>plausibility of threshold confounder</div>"
+                        f"<div class='v dim'>{_e(interp['plausibility_of_threshold_confounder'])}</div>"
+                    )
+
+            # Tipping-point + negative-control auto-fired
+            tip = diag.get("tipping_point") if isinstance(diag, dict) else None
+            if isinstance(tip, dict) and not tip.get("error"):
+                tip_smd = tip.get("tipping_smd")
+                if tip_smd is not None:
+                    out.append(
+                        f"<div class='k'>tipping confounder SMD</div>"
+                        f"<div class='v'>{tip_smd:.3f}</div>"
+                    )
+            negcontrol = diag.get("negative_control_scan") if isinstance(diag, dict) else None
+            if isinstance(negcontrol, dict):
+                interp_str = negcontrol.get("interpretation", "")
+                if interp_str:
+                    out.append(
+                        f"<div class='k'>negative-control scan</div>"
+                        f"<div class='v dim'>{_e(interp_str)}</div>"
+                    )
+
         if walk.q8_interpretation:
             out.append(f"<div class='k'>Step 8</div><div class='v serif'>{_e(walk.q8_interpretation)}</div>")
+
+        if walk.sensitivity_verdict:
+            color_class = {
+                "green": "ok", "yellow": "warn", "red": "err",
+                "unknown": "dim", "errored": "err",
+            }.get(walk.sensitivity_verdict, "dim")
+            out.append(
+                f"<div class='k'>sensitivity verdict</div>"
+                f"<div class='v {color_class}'>● {_e(walk.sensitivity_verdict)}</div>"
+            )
+
+        if walk.failure_reason:
+            out.append(
+                f"<div class='k'>failure reason</div>"
+                f"<div class='v err'>{_e(walk.failure_reason)}</div>"
+            )
+
         out.append("</div></details>")
     return "".join(out)
 

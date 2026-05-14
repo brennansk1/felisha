@@ -1197,6 +1197,135 @@ def auto(
 
 
 @app.command()
+def synthesize(
+    project: Annotated[
+        Path | None,
+        typer.Option("--project", help="Project directory (default: cwd)."),
+    ] = None,
+    data: Annotated[
+        Path | None,
+        typer.Option("--data", help="Dataset (defaults to the one in the protocol)."),
+    ] = None,
+    base_url: Annotated[str, typer.Option("--base-url")] = "http://127.0.0.1:11434",
+) -> None:
+    """Regenerate the executive synthesis from an existing protocol.
+
+    Useful when the master-loop run finished but the LLM glitched on
+    the synthesis step (or you want to refresh the narrative without
+    re-running estimation).
+    """
+    import pandas as pd
+    from causalrag.reporting.synthesis import synthesize_insights
+
+    project_dir = (project or Path.cwd()).resolve()
+    protocol_path = project_dir / PROTOCOL_FILENAME
+    if not protocol_path.exists():
+        console.print(f"[red]No protocol at {protocol_path}[/red]")
+        raise typer.Exit(2)
+    protocol = StudyProtocol.read_yaml(protocol_path)
+
+    # Locate dataset
+    data_path: Path | None = data
+    if data_path is None and protocol.dataset and protocol.dataset.source:
+        src = protocol.dataset.source.removeprefix("csv://")
+        candidate = Path(src)
+        if candidate.exists():
+            data_path = candidate.resolve()
+    if data_path is None:
+        console.print(
+            "[yellow]No dataset path resolved; synthesis will run with an "
+            "empty df. Pass --data <csv> to enable magnitude conversions.[/yellow]"
+        )
+        df = pd.DataFrame()
+    else:
+        df = pd.read_csv(data_path)
+
+    profile = run_doctor(base_url=base_url)
+    slots, _ = recommend(profile)
+    cassette_dir = project_dir / ".causalrag" / "cassettes"
+    cassette_dir.mkdir(parents=True, exist_ok=True)
+    client = OllamaClient(
+        model=slots.hypothesize,
+        base_url=base_url,
+        cassette_dir=cassette_dir,
+        allow_live=True,
+    )
+
+    console.print("[bold cyan]▸ Regenerating executive synthesis...[/bold cyan]")
+    synth = synthesize_insights(
+        protocol=protocol,
+        df=df,
+        client=client,
+        error_log_path=project_dir / "executive_synthesis_error.txt",
+    )
+    output_path = project_dir / "executive_synthesis.json"
+    output_path.write_text(synth.model_dump_json(indent=2))
+    console.print(f"[green]✓[/green] synthesis · {synth.inferred_domain}")
+    console.print(f"  {synth.tldr}")
+    console.print(f"[dim]Written to {output_path}[/dim]")
+
+
+@app.command()
+def explain(
+    method: Annotated[
+        str | None,
+        typer.Option("--method", help="Estimator id to look up."),
+    ] = None,
+    all: Annotated[
+        bool, typer.Option("--all", help="List every catalog entry.")
+    ] = False,
+) -> None:
+    """Look up the catalog entry for an estimator id, or list everything.
+
+    `causalrag explain --method python.dml.linear` prints the use case
+    and trigger flags. `causalrag explain --all` dumps the full table.
+    """
+    from causalrag.estimators.catalog import CATALOG, method_use_case_lookup
+
+    if all:
+        console.print("[bold]Full estimator catalog:[/bold]\n")
+        for spec in CATALOG:
+            flags = (
+                ", ".join(f.value for f in spec.required_flags) or "—"
+            )
+            console.print(
+                f"[cyan]{spec.estimator_id}[/cyan] ({spec.backend}, min_n={spec.min_n})\n"
+                f"  {spec.use_case}\n"
+                f"  required flags: {flags}\n"
+            )
+        return
+
+    if not method:
+        console.print(
+            "[dim]Pass --method <id> to look up one method, or --all to list every entry.[/dim]"
+        )
+        raise typer.Exit(1)
+
+    lookup = method_use_case_lookup()
+    if method not in lookup:
+        console.print(f"[red]Unknown method id: {method}[/red]")
+        console.print(
+            "[dim]Try `causalrag explain --all` to see all registered ids.[/dim]"
+        )
+        raise typer.Exit(1)
+
+    spec = next(s for s in CATALOG if s.estimator_id == method)
+    flags = ", ".join(f.value for f in spec.required_flags) or "—"
+    excluded = ", ".join(f.value for f in spec.excluded_flags) or "—"
+    console.print(f"[cyan][bold]{spec.estimator_id}[/bold][/cyan]")
+    console.print(f"  backend: {spec.backend}")
+    console.print(f"  use case: {spec.use_case}")
+    console.print(f"  estimands: {', '.join(spec.estimands)}")
+    console.print(f"  required flags: {flags}")
+    console.print(f"  excluded flags: {excluded}")
+    console.print(f"  min sample size: {spec.min_n}")
+    if spec.domain_hint:
+        console.print(f"  domain hint: {spec.domain_hint}")
+    if spec.reference:
+        console.print(f"  reference: {spec.reference}")
+
+
+@app.command()
 def tui(
     project: Annotated[
         Path | None,
