@@ -92,7 +92,18 @@ class CandidateExperiment(BaseModel):
     outcome: str
     estimand_class: str  # ATE / CATE / NDE / NIE / LATE / RMST_CONTRAST / MTP / ATT / ATC
     modifiers: list[str] = Field(default_factory=list)
-    mediator: str | None = None
+    mediator: str | None = Field(
+        default=None,
+        description="Back-compat single-mediator slot. Prefer `mediators` for multi-mediator chains.",
+    )
+    mediators: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Ordered mediator chain T → M_1 → ... → M_k → Y. When non-empty "
+            "and a single-mediator estimator is used, only the first entry is "
+            "consumed; multi-mediator estimators (when wired) consume the full chain."
+        ),
+    )
     instrument: str | None = None
     recommended_method: str | None = Field(
         default=None, description="Estimator id from the catalog"
@@ -1029,7 +1040,10 @@ def _run_one_experiment(
             "treatment": candidate.treatment,
             "outcome": candidate.outcome,
             "modifiers": tuple(candidate.modifiers),
-            "mediator": candidate.mediator,
+            "mediators": tuple(candidate.mediators) if candidate.mediators else (
+                (candidate.mediator,) if candidate.mediator else ()
+            ),
+            "mediator": candidate.mediator or (candidate.mediators[0] if candidate.mediators else None),
             "instrument": candidate.instrument,
             "formal_expression": _formal_for(klass),
         }

@@ -15,9 +15,23 @@ class CausalEdge(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     source: str
     target: str
+    bidirected: bool = Field(
+        default=False,
+        description=(
+            "True iff this edge represents a latent confounder between "
+            "source and target (ADMG bidirected edge ↔). Stored once "
+            "per pair; the network projection materialises both "
+            "directions for nx traversal."
+        ),
+    )
     llm_proposed: bool = False
     ci_test_passed: bool | None = None
     note: str | None = None
+
+    @property
+    def edge_kind(self) -> str:
+        """Returns 'bidirected' or 'directed' for serialisation / display."""
+        return "bidirected" if self.bidirected else "directed"
 
 
 class CausalGraph(BaseModel):
@@ -41,13 +55,27 @@ class CausalGraph(BaseModel):
         for node in self.nodes:
             g.add_node(node, role=self.roles.get(node, VariableRole.AUXILIARY).value)
         for edge in self.edges:
+            # Bidirected edges materialise as both directions so nx
+            # traversal sees the latent connection. The `bidirected`
+            # attribute survives so downstream consumers (c-component
+            # decomposition, ADMG identification) can distinguish them.
             g.add_edge(
                 edge.source,
                 edge.target,
+                bidirected=edge.bidirected,
                 llm_proposed=edge.llm_proposed,
                 ci_test_passed=edge.ci_test_passed,
                 note=edge.note,
             )
+            if edge.bidirected:
+                g.add_edge(
+                    edge.target,
+                    edge.source,
+                    bidirected=True,
+                    llm_proposed=edge.llm_proposed,
+                    ci_test_passed=edge.ci_test_passed,
+                    note=edge.note,
+                )
         return g
 
     @classmethod
@@ -58,17 +86,27 @@ class CausalGraph(BaseModel):
             for n in g.nodes()
             if "role" in g.nodes[n]
         }
-        edges = tuple(
-            CausalEdge(
-                source=u,
-                target=v,
-                llm_proposed=bool(d.get("llm_proposed", False)),
-                ci_test_passed=d.get("ci_test_passed"),
-                note=d.get("note"),
+        # Collapse the doubled bidirected edges back to single records.
+        bidirected_seen: set[frozenset[str]] = set()
+        edges_out: list[CausalEdge] = []
+        for u, v, d in g.edges(data=True):
+            is_bi = bool(d.get("bidirected", False))
+            if is_bi:
+                key = frozenset({u, v})
+                if key in bidirected_seen:
+                    continue
+                bidirected_seen.add(key)
+            edges_out.append(
+                CausalEdge(
+                    source=u,
+                    target=v,
+                    bidirected=is_bi,
+                    llm_proposed=bool(d.get("llm_proposed", False)),
+                    ci_test_passed=d.get("ci_test_passed"),
+                    note=d.get("note"),
+                )
             )
-            for u, v, d in g.edges(data=True)
-        )
-        return cls(nodes=nodes, edges=edges, roles=roles, rank=rank)
+        return cls(nodes=nodes, edges=tuple(edges_out), roles=roles, rank=rank)
 
     def is_acyclic(self) -> bool:
         return nx.is_directed_acyclic_graph(self.to_networkx())
@@ -123,6 +161,51 @@ class CausalGraph(BaseModel):
                 if g.has_edge(path[i - 1], node) and g.has_edge(path[i + 1], node):
                     out.add(node)
         return frozenset(out)
+
+    def has_bidirected_edges(self) -> bool:
+        return any(e.bidirected for e in self.edges)
+
+    def bidirected_neighbors(self, node: str) -> frozenset[str]:
+        """Nodes connected to ``node`` by a bidirected edge (latent confounder)."""
+        out: set[str] = set()
+        for e in self.edges:
+            if not e.bidirected:
+                continue
+            if e.source == node:
+                out.add(e.target)
+            elif e.target == node:
+                out.add(e.source)
+        return frozenset(out)
+
+    def c_components(self) -> tuple[frozenset[str], ...]:
+        """Partition nodes by reachability through bidirected edges.
+
+        Each c-component is a maximal set of nodes connected through
+        bidirected edges (latent confounders). For a pure DAG with no
+        bidirected edges, every node is its own singleton component.
+        """
+        nodes = list(self.nodes)
+        parent: dict[str, str] = {n: n for n in nodes}
+
+        def find(x: str) -> str:
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        def union(a: str, b: str) -> None:
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[ra] = rb
+
+        for e in self.edges:
+            if e.bidirected and e.source in parent and e.target in parent:
+                union(e.source, e.target)
+
+        groups: dict[str, set[str]] = {}
+        for n in nodes:
+            groups.setdefault(find(n), set()).add(n)
+        return tuple(frozenset(g) for g in groups.values())
 
     @classmethod
     def empty(cls) -> CausalGraph:

@@ -1,0 +1,18 @@
+---
+title: "{{TITLE}}"
+date: "{{DATE}}"
+format:
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 3
+  pdf:
+    toc: true
+  docx:
+    toc: true
+project:
+  name: "{{PROJECT_NAME}}"
+  tier: "{{TIER}}"
+---
+
+{{BODY}}
