@@ -14,6 +14,7 @@ Behavior mirrored from the design's `live.jsx`:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import ClassVar
 
 from rich.text import Text
@@ -23,6 +24,13 @@ from textual.events import Key
 from textual.message import Message
 from textual.reactive import reactive
 from textual.widgets import Input, ListItem, ListView, Static
+
+from causalrag.tui.completion import (
+    apply_completion,
+    common_prefix,
+    complete_path,
+    needs_path_completion,
+)
 
 
 @dataclass(frozen=True)
@@ -43,6 +51,7 @@ COMMANDS: tuple[Command, ...] = (
     Command("/report", "render HTML / PDF / Quarto", 6),
     Command("/run", "full pipeline, one shot (deterministic)", 0),
     Command("/auto", "AUTONOMOUS — LLM proposes K experiments + foundation loop", 0),
+    Command("/layout", "toggle --auto mode panels (queue + chain forest)", 0),
     Command("/help", "list of commands", 0),
     Command("/clear", "clear the log view", 0),
     Command("/quit", "exit the TUI", 0),
@@ -52,7 +61,12 @@ COMMANDS: tuple[Command, ...] = (
 def filter_commands(prefix: str) -> tuple[Command, ...]:
     if not prefix.startswith("/"):
         return ()
-    needle = prefix[1:].lower()
+    # Slash-menu filter only runs over the command head, not the args.
+    head = prefix.split(" ", 1)[0]
+    if " " in prefix:
+        # User has already finished typing the command; menu hides.
+        return ()
+    needle = head[1:].lower()
     return tuple(c for c in COMMANDS if c.name[1:].lower().startswith(needle))
 
 
@@ -148,6 +162,12 @@ class ComposerHints(Static):
     streaming: reactive[bool] = reactive(False)
     cassette_status: reactive[str] = reactive("cassette · rec")
     model_label: reactive[str] = reactive("ollama · qwen3:14b")
+    # Live "elapsed: 47s" string shown while a worker is running so the
+    # operator can see long LLM calls are still ticking, not hung.
+    elapsed_seconds: reactive[int] = reactive(0)
+    elapsed_label: reactive[str] = reactive("")
+    # Transient hint shown after a Tab completion with multiple matches.
+    completion_hint: reactive[str] = reactive("")
 
     def __init__(self) -> None:
         super().__init__("", markup=False)
@@ -157,10 +177,18 @@ class ComposerHints(Static):
 
     def _refresh(self) -> None:
         line = Text()
+        # If we have a transient completion-hint preview, render it
+        # in place of the usual keybinding row (clearer feedback).
+        if self.completion_hint:
+            line.append("  match · ", style="#5fa8ff")
+            line.append(self.completion_hint, style="#9ec2ff")
+            self.update(line)
+            return
         for label, key in (
             ("commands", "/"),
             ("history", "↑"),
             ("complete", "Tab"),
+            ("clear", "⌃L"),
             ("cancel", "⌃C"),
         ):
             line.append(f" {key} ", style="#9aa3b5")
@@ -173,6 +201,12 @@ class ComposerHints(Static):
         line.append("    ", style="")
         if self.streaming:
             line.append("● streaming", style="#5fa8ff")
+            if self.elapsed_seconds > 0:
+                tag = self.elapsed_label or "elapsed"
+                line.append(
+                    f"  · {tag} {self.elapsed_seconds}s",
+                    style="#9ec2ff",
+                )
         else:
             line.append("idle", style="#4d5773")
         self.update(line)
@@ -184,6 +218,15 @@ class ComposerHints(Static):
         self._refresh()
 
     def watch_model_label(self) -> None:
+        self._refresh()
+
+    def watch_elapsed_seconds(self) -> None:
+        self._refresh()
+
+    def watch_elapsed_label(self) -> None:
+        self._refresh()
+
+    def watch_completion_hint(self) -> None:
         self._refresh()
 
 
@@ -199,13 +242,22 @@ class ComposerPanel(Vertical):
 
     HISTORY_LIMIT: ClassVar[int] = 200
 
-    def __init__(self) -> None:
+    def __init__(self, cwd: Path | None = None) -> None:
         super().__init__()
         self.menu = SlashMenu()
         self.input = CmdInput()
         self.hints = ComposerHints()
         self._history: list[str] = []
         self._history_idx: int | None = None
+        # Per-command last-argument memory: maps "/discover" -> last full
+        # args string ("data/cohort.csv --treatment T"). Pressing Up on an
+        # empty arg slot pulls the last value for the current command.
+        self._per_command_args: dict[str, str] = {}
+        self._cwd: Path = cwd or Path.cwd()
+
+    def set_cwd(self, cwd: Path) -> None:
+        """Update the working directory used for path completion."""
+        self._cwd = cwd
 
     def compose(self):
         yield self.menu
@@ -216,6 +268,9 @@ class ComposerPanel(Vertical):
     def _on_changed(self, event: Input.Changed) -> None:
         v = event.value
         self.menu.items = filter_commands(v)
+        # Typing dismisses the stale Tab-completion match preview.
+        if self.hints.completion_hint:
+            self.hints.completion_hint = ""
 
     @on(Input.Submitted)
     def _on_submitted(self, event: Input.Submitted) -> None:
@@ -226,24 +281,62 @@ class ComposerPanel(Vertical):
         if len(self._history) > self.HISTORY_LIMIT:
             self._history = self._history[-self.HISTORY_LIMIT :]
         self._history_idx = None
+        # Stash per-command arg history so the user can recall the last
+        # invocation of "/discover" without scrolling all of history.
+        head, _, rest = value.partition(" ")
+        if rest:
+            self._per_command_args[head.lower()] = rest
         self.input.value = ""
         self.menu.items = ()
         self.post_message(self.Submit(value))
 
     @on(CmdInput._RequestAutocomplete)
     def _on_autocomplete(self) -> None:
-        if not self.menu.items:
+        # Phase 1: filling in the slash command itself.
+        if self.menu.items:
+            cmd = self.menu.selected_command() or self.menu.items[0]
+            self.input.value = f"{cmd.name} "
+            self.input.cursor_position = len(self.input.value)
+            self.menu.items = ()
             return
-        cmd = self.menu.selected_command() or self.menu.items[0]
-        self.input.value = f"{cmd.name} "
-        self.input.cursor_position = len(self.input.value)
-        self.menu.items = ()
+        # Phase 2: filling in a file-path argument. We only do this for the
+        # commands listed in PATH_ARG_COMMANDS and only when the cursor is
+        # sitting on the path slot.
+        line = self.input.value
+        if not needs_path_completion(line):
+            return
+        completions = complete_path(line, self._cwd)
+        if not completions:
+            return
+        if len(completions) == 1:
+            self.input.value = apply_completion(line, completions[0])
+            self.input.cursor_position = len(self.input.value)
+            return
+        # Multiple matches: extend to the common prefix and show hint.
+        shared = common_prefix(completions)
+        token = line.rsplit(" ", 1)[-1] if not line.endswith(" ") else ""
+        if len(shared) > len(token.rsplit("/", 1)[-1]):
+            # Apply the common prefix.
+            self.input.value = apply_completion(line, shared)
+            self.input.cursor_position = len(self.input.value)
+        # Surface the candidates briefly in the hints strip.
+        self.hints.completion_hint = "  ".join(completions[:6])
 
     @on(CmdInput._RequestUp)
     def _on_up(self) -> None:
         if self.menu.items:
             self.menu.step(-1)
             return
+        # If the user has typed "/discover " with no args yet, hydrate
+        # with the last value they used for that command.
+        line = self.input.value
+        if line.endswith(" "):
+            head = line.split(" ", 1)[0].lower()
+            last = self._per_command_args.get(head)
+            if last:
+                self.input.value = f"{head} {last}"
+                self.input.cursor_position = len(self.input.value)
+                return
         if not self._history:
             return
         if self._history_idx is None:

@@ -31,6 +31,7 @@ from causalrag.roadmap.q7_estimate import estimate as run_estimate
 from causalrag.sensitivity.evalue import evalue as run_evalue
 from causalrag.sensitivity.sensemakr_py import sensemakr as run_sensemakr
 from causalrag.sensitivity.verdict import aggregate as aggregate_sensitivity
+from causalrag.tui.errors import hint_for
 from causalrag.tui.widgets.cards import column_table, kv_table
 from causalrag.tui.widgets.composer import COMMANDS
 
@@ -285,6 +286,9 @@ async def run_discover(app: "CausalRoadmapTUI", args: list[str]) -> None:
         )
     except Exception as e:
         app.log_view.line(f"discover failed · {type(e).__name__}: {e}", kind="err", gutter="✗")
+        hint = hint_for(e)
+        if hint:
+            app.log_view.line(hint, kind="acc", gutter="→")
         return
 
     app.log_view.line(
@@ -514,6 +518,9 @@ async def run_estimate_cmd(app: "CausalRoadmapTUI", args: list[str]) -> None:
         )
     except Exception as e:
         app.log_view.line(f"estimate failed · {type(e).__name__}: {e}", kind="err", gutter="✗")
+        hint = hint_for(e)
+        if hint:
+            app.log_view.line(hint, kind="acc", gutter="→")
         return
 
     # Headline card
@@ -1050,6 +1057,55 @@ async def run_quit(app: "CausalRoadmapTUI", _args: list[str]) -> None:
     app.exit()
 
 
+async def run_layout(app: "CausalRoadmapTUI", args: list[str]) -> None:
+    """Toggle visibility of the /auto-mode side panels.
+
+    Usage:
+        /layout                  show/hide both queue + chain panels
+        /layout queue            toggle just the candidate queue
+        /layout chains           toggle just the chain forest
+        /layout show             force both visible (if auto_mode)
+        /layout hide             hide both
+    """
+    queue = getattr(app, "queue_panel", None)
+    chains = getattr(app, "chain_forest", None)
+    if queue is None and chains is None:
+        app.log_view.line(
+            "/layout has no effect — start the TUI with --auto to mount panels.",
+            kind="dim",
+            gutter="·",
+        )
+        return
+    target = (args[0].lower() if args else "toggle")
+    if target == "show":
+        if queue is not None:
+            queue.display = True
+        if chains is not None:
+            chains.display = True
+    elif target == "hide":
+        if queue is not None:
+            queue.display = False
+        if chains is not None:
+            chains.display = False
+    elif target == "queue":
+        if queue is not None:
+            queue.display = not queue.display
+    elif target == "chains":
+        if chains is not None:
+            chains.display = not chains.display
+    else:  # default toggle
+        if queue is not None:
+            queue.display = not queue.display
+        if chains is not None:
+            chains.display = not chains.display
+    states = []
+    if queue is not None:
+        states.append(f"queue · {'on' if queue.display else 'off'}")
+    if chains is not None:
+        states.append(f"chains · {'on' if chains.display else 'off'}")
+    app.log_view.line(" · ".join(states), kind="acc", gutter="◧")
+
+
 # --- Dispatcher ------------------------------------------------------------
 
 
@@ -1183,6 +1239,16 @@ async def run_auto(app: "CausalRoadmapTUI", args: list[str]) -> None:
         "discover": 1, "feasibility": 2, "hypothesize": 3,
         "estimate": 4, "sensitivity": 5, "report": 6,
     }
+    # Auto-mode sub-phase labels — surfaced on the status bar so the user
+    # can tell whether the loop is still planning, critiquing, or walking.
+    sub_phase_label: dict[str, str] = {
+        "plan": "3 · plan",
+        "planner": "3 · plan",
+        "critic": "3 · critic",
+        "auto": "4 · auto",
+        "synthesis": "6 · synthesis",
+        "synthesize": "6 · synthesis",
+    }
     queue_panel = getattr(app, "queue_panel", None)
     chain_forest = getattr(app, "chain_forest", None)
     for ev in events:
@@ -1198,16 +1264,31 @@ async def run_auto(app: "CausalRoadmapTUI", args: list[str]) -> None:
                 chain_forest.update_panel(ev.payload)
 
         if ev.kind == "phase_start":
-            app.set_phase(phase_idx)
+            label = sub_phase_label.get(ev.phase)
+            if label is not None:
+                app.set_phase(phase_idx, label=label)
+            else:
+                app.set_phase(phase_idx)
             app.log_view.line(ev.message or "", kind="acc", gutter="▸")
         elif ev.kind == "phase_end":
             app.log_view.line(ev.message or "", kind="ok", gutter="✓")
         elif ev.kind == "card":
-            app.log_view.line(ev.message or "", kind="acc", gutter="·")
+            _render_auto_card(app, ev)
+        elif ev.kind == "plan":
+            top = ev.payload.get("top") if isinstance(ev.payload, dict) else None
+            n = len(top) if isinstance(top, list) else 0
+            app.log_view.line(
+                f"plan · top-{n} candidates ready",
+                kind="acc",
+                gutter="◆",
+            )
         elif ev.kind == "done":
             app.log_view.line(ev.message or "", kind="ok", gutter="✓")
         elif ev.kind == "error":
             app.log_view.line(ev.message or "", kind="err", gutter="✗")
+            hint = hint_for(ev.message or "")
+            if hint:
+                app.log_view.line(hint, kind="acc", gutter="→")
         else:
             app.log_view.line(ev.message or "", kind="dim", gutter="·")
     app.log_view.line(
@@ -1217,8 +1298,63 @@ async def run_auto(app: "CausalRoadmapTUI", args: list[str]) -> None:
     )
 
 
+def _render_auto_card(app: "CausalRoadmapTUI", ev: Any) -> None:
+    """Render a `kind=\"card\"` event in /auto mode with a readable layout.
+
+    Falls back to the plain message when the payload is a non-dict.
+    Verdict / magnitude / CI get their own indented lines with colored
+    chips so the user can scan the result at a glance.
+    """
+    payload = ev.payload if isinstance(ev.payload, dict) else {}
+    if not payload:
+        app.log_view.line(ev.message or "", kind="acc", gutter="·")
+        return
+    hid = payload.get("id") or payload.get("hypothesis_id") or "?"
+    treat = payload.get("treatment", "?")
+    out = payload.get("outcome", "?")
+    point = payload.get("point") or payload.get("point_estimate")
+    ci_low = payload.get("ci_low")
+    ci_high = payload.get("ci_high")
+    verdict = (payload.get("sensitivity_verdict") or "").lower()
+    method = payload.get("method") or payload.get("estimator_id")
+    chip_color = {"green": "ok", "yellow": "warn", "red": "err"}.get(verdict, "dim")
+    chip_glyph = {"green": "●", "yellow": "◐", "red": "○"}.get(verdict, "·")
+
+    header = Text()
+    header.append(f"[{hid}] ", style="#9ec2ff bold")
+    header.append(f"{treat} → {out}", style="#cfd6e4")
+    if method:
+        header.append(f"  · {method}", style="#9aa3b5")
+    app.log_view.line(header, kind="acc", gutter="◆")
+
+    if point is not None:
+        mag = Text()
+        mag.append("magnitude  ", style="#4d5773")
+        try:
+            mag.append(f"{float(point):+.4f}", style="#9ec2ff bold")
+        except (TypeError, ValueError):
+            mag.append(str(point), style="#cfd6e4")
+        if ci_low is not None and ci_high is not None:
+            try:
+                mag.append(
+                    f"   95% CI [{float(ci_low):+.4f}, {float(ci_high):+.4f}]",
+                    style="#cfd6e4",
+                )
+            except (TypeError, ValueError):
+                pass
+        app.log_view.line(mag, kind="", gutter=" ")
+    if verdict:
+        chip = Text()
+        chip.append("sensitivity ", style="#4d5773")
+        chip.append(f"{chip_glyph} {verdict.upper()}", style="bold")
+        app.log_view.line(chip, kind=chip_color, gutter=" ")
+    elif ev.message:
+        app.log_view.line(ev.message, kind="dim", gutter="·")
+
+
 DISPATCH: dict[str, Any] = {
     "/help": run_help,
+    "/?": run_help,
     "/clear": run_clear,
     "/init": run_init,
     "/doctor": run_doctor,
@@ -1230,6 +1366,7 @@ DISPATCH: dict[str, Any] = {
     "/report": run_report,
     "/run": run_run,
     "/auto": run_auto,
+    "/layout": run_layout,
     "/quit": run_quit,
     "/exit": run_quit,
 }
@@ -1267,3 +1404,6 @@ async def dispatch(app: "CausalRoadmapTUI", line: str) -> None:
             kind="err",
             gutter="✗",
         )
+        hint = hint_for(e)
+        if hint:
+            app.log_view.line(hint, kind="acc", gutter="→")

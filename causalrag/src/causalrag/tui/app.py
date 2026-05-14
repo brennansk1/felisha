@@ -14,6 +14,7 @@ on disk and updates chrome state (phase, model, tier).
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from rich.text import Text
@@ -48,6 +49,8 @@ class CausalRoadmapTUI(App):
         Binding("ctrl+c", "request_quit", "Quit", priority=True),
         Binding("ctrl+l", "clear_log", "Clear log"),
         Binding("ctrl+k", "focus_input", "Focus input"),
+        Binding("ctrl+g", "scroll_log_end", "Go to end"),
+        Binding("ctrl+t", "toggle_layout", "Toggle panels"),
     ]
 
     def __init__(
@@ -65,8 +68,14 @@ class CausalRoadmapTUI(App):
         )
         self.log_view = LogView()
         self.status_bar = StatusBar()
-        self.composer = ComposerPanel()
+        self.composer = ComposerPanel(cwd=self.project_dir)
         self._running_worker = None
+        # Elapsed-timer state: when a worker starts we stash the wall-time
+        # and start an Interval that pushes "elapsed 47s" into the hints
+        # strip. This is the user-visible "yes, the LLM is still working"
+        # signal during 30-180s tool calls.
+        self._worker_started_at: float | None = None
+        self._elapsed_timer = None
         # `--auto` mode mounts the live planner-queue + chain-forest panels
         # so the user can watch the master loop's reasoning in flight.
         self.auto_mode = auto_mode
@@ -120,6 +129,8 @@ class CausalRoadmapTUI(App):
         self.project_dir = path.resolve()
         self.title_bar.crumbs = (self.project_dir.name,)
         self.status_bar.study = self.project_dir.name
+        # Keep composer's tab-completion rooted at the new project dir.
+        self.composer.set_cwd(self.project_dir)
 
     def set_phase(self, phase: int, label: str | None = None) -> None:
         self.status_bar.set_phase(phase, label)
@@ -130,10 +141,33 @@ class CausalRoadmapTUI(App):
         self.title_bar.streaming = streaming
         if streaming:
             self.title_bar.model = "streaming…"
-        elif self.cached_slots is not None:
-            self.title_bar.model = self.cached_slots.discovery
+            self._worker_started_at = time.monotonic()
+            self.composer.hints.elapsed_seconds = 0
+            # Tear down any stale timer first, then start a fresh 1s tick.
+            if self._elapsed_timer is not None:
+                self._elapsed_timer.stop()
+            self._elapsed_timer = self.set_interval(1.0, self._tick_elapsed)
         else:
-            self.title_bar.model = "idle"
+            if self._elapsed_timer is not None:
+                self._elapsed_timer.stop()
+                self._elapsed_timer = None
+            self._worker_started_at = None
+            self.composer.hints.elapsed_seconds = 0
+            self.composer.hints.elapsed_label = ""
+            if self.cached_slots is not None:
+                self.title_bar.model = self.cached_slots.discovery
+            else:
+                self.title_bar.model = "idle"
+
+    def _tick_elapsed(self) -> None:
+        if self._worker_started_at is None:
+            return
+        secs = int(time.monotonic() - self._worker_started_at)
+        self.composer.hints.elapsed_seconds = secs
+
+    def set_elapsed_label(self, label: str) -> None:
+        """Allow command runners to tag the elapsed timer (e.g. "LLM critic")."""
+        self.composer.hints.elapsed_label = label
 
     # --- Event handlers --------------------------------------------------
 
@@ -161,6 +195,23 @@ class CausalRoadmapTUI(App):
 
     def action_focus_input(self) -> None:
         self.composer.input.focus()
+
+    def action_scroll_log_end(self) -> None:
+        self.log_view.scroll_end(animate=False)
+
+    def action_toggle_layout(self) -> None:
+        """Cycle visibility of the /auto-mode side panels (queue + chains)."""
+        if self.queue_panel is None and self.chain_forest is None:
+            return
+        # Toggle together: if either is visible, hide both; else show both.
+        any_visible = (self.queue_panel is not None and self.queue_panel.display) or (
+            self.chain_forest is not None and self.chain_forest.display
+        )
+        new_state = not any_visible
+        if self.queue_panel is not None:
+            self.queue_panel.display = new_state
+        if self.chain_forest is not None:
+            self.chain_forest.display = new_state
 
 
 def run(project_dir: Path | None = None, auto_mode: bool = False) -> None:

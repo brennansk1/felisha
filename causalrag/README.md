@@ -95,9 +95,28 @@ runs inside the persistent TUI session with live progress updates.
 | `/report` | 6 | Render HTML (default) or Markdown. Executive synthesis is rendered at the top if `executive_synthesis.json` is present. |
 | `/run <data> [--treatment T] [--outcome Y]` | 0–6 | Deterministic single-pass: discovery → feasibility → hypothesize → estimate → sensitivity → report. One LLM call per phase. |
 | **`/auto run <data> --experiments K [--foundation]`** | 0–6 | **Autonomous master mode.** See below. |
-| `/help` | — | List of commands. |
+| `/layout [show\|hide\|queue\|chains]` | — | Toggle the candidate-queue + chain-forest side panels (only when launched with `--auto`). |
+| `/help`, `/?` | — | List of commands. |
 | `/clear` | — | Clear the log view. |
 | `/quit` | — | Exit the TUI. |
+
+### Keyboard shortcuts
+
+| Key | Action |
+|---|---|
+| `/` | Open the slash-command menu. |
+| `Tab` | Autocomplete the slash command **or** the file-path argument for `/init`, `/discover`, `/run`, `/auto`. |
+| `↑` / `↓` | Walk history (or the slash-menu items). On an empty arg slot like `/discover `, `↑` recalls the last value used for that command. |
+| `Ctrl-K` | Focus the input. |
+| `Ctrl-L` | Clear the log. |
+| `Ctrl-G` | Scroll the log to the bottom. |
+| `Ctrl-T` | Toggle the `--auto` side panels (queue + chain forest). |
+| `Ctrl-C` | Quit. |
+
+While a command is running the hint strip shows a live `elapsed Ns`
+counter so you can see long LLM calls are still ticking. Errors get an
+extra one-line hint when the failure matches a known pattern (Ollama
+down, dataset missing, schema mismatch, etc.).
 
 ### `/auto` — the master loop in detail
 
