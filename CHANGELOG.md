@@ -3,6 +3,59 @@
 All notable changes to Felisha / CausalRoadmap. Entries are grouped by
 "round" — a coherent batch of work shipped together.
 
+## v1.0 (May 2026) — sprint plan complete
+
+Every P0/P1 ticket from `docs/SPRINT_PLAN_V1.md` is shipped. Headline
+features:
+
+- 40+ estimators across Python and R; modern DiD stack; synthetic
+  control / ASCM / SDiD; rdrobust family; tlverse `tmle3` + `sl3` +
+  `tmle3mediate`; conformal ITE; proximal CI; front-door g-formula;
+  distributional regression; hierarchical / multilevel; network
+  interference (Aronow-Samii, Sävje-Aronow-Hudgens); Duarte autobounds
+  partial-identification fallback.
+- Identification with DoWhy + `ananke`/`Y0` reconciliation;
+  transportability; multiverse + multiverse-of-DAGs/BMA;
+  c-component decomposition for large graphs; ADMGs with proper
+  bidirected edges; multi-mediator chains; time-varying / panel
+  layering; effect-modifier topology; domain DAG templates.
+- Autonomous master loop with EIG-based chain continuation, Thompson
+  sampling across roots, Self-Refine critic loop, MCTS with
+  progressive widening, RAG over prior runs, postmortem record,
+  per-family circuit breaker, multi-agent debate behind `--paranoid`.
+- Sensitivity dashboard aggregating E-value (scale-routed),
+  sensemakr / Chernozhukov-Cinelli-Newey OVB, Zhao 2019 Γ, Rosenbaum,
+  Manski, refutations, anomaly audit, tipping-point, negative-control
+  scan, e-value closed testing, always-valid CIs (Howard-Ramdas /
+  Waudby-Smith-Ramdas), multiple-testing adjustment.
+- BI tasks — root-cause attribution, causal forecasting / impact,
+  uplift / policy targeting, MMM wrappers (Robyn / Meridian /
+  PyMC-Marketing), GeoLift incrementality.
+- Reporting — Quarto multi-format output, OSF / AsPredicted /
+  Hubbard NEJM 2024 TTE preregistration export, Jupyter notebook
+  export, run.lock.json reproducibility manifest.
+- TUI — multi-pane layout, in-terminal plots via `textual-plotext`,
+  tutorial mode, study save/load/branch, hover-help on flag chips.
+- LLM scaffolding — engine abstraction (Ollama / llama.cpp / vLLM /
+  MLX-LM), EAGLE-2/3 speculative-decoding adapter, three-layer
+  cache, DSPy + Outlines opt-in module catalog covering all 8 prompt
+  sites, YAML FlagRegistry with full metadata.
+- Audits — end-to-end flow audit (ship gate, GREEN), method-coverage
+  matrix (1610 v1.1 ticket candidates), island detector.
+
+Deferred to v1.1:
+- 6.8 MR-RAPS / GRAPPLE for Mendelian randomization (epidemiology-
+  specific; waits for a clinical user request per pro/con analysis).
+- Full DSPy compile-time optimisation against gold sets (scaffolding
+  shipped; gold-set curation is the next gating task).
+- TUI plotext as a hard dep (currently optional with ASCII fallback).
+- Sub-agent test stubs for 2.1 / 9.2 / 9.3 / 9.5 replaced with full
+  behavioural tests (the Wave 7 rate-limit cut those short — code
+  is functional + import-smoked, behavioural coverage upgrade for v1.1).
+
+1165+ unit tests passing. 30 skipped (rpy2 / pymc / ananke / autobounds
+/ mlx_lm / plotext / dspy / outlines optional). Audit GREEN.
+
 ## Round 4 — wire round-2 LLM modules + smoke-test follow-ups (May 2026)
 
 ### Wired

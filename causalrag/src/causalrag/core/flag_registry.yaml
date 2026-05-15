@@ -1,0 +1,273 @@
+# Canonical FlagRegistry — Sprint 1.1
+# YAML projection of every DataFlag, with metadata used by:
+#   * synthesis / planner / critic prompts (description + implication)
+#   * estimator selection cascade (routes_to)
+#   * Sprint 9.5.1 flow audit (group / parent / detector / closure rules)
+#   * the HTML report (hover tooltips on flag chips)
+# Bootstrap source is `core/flag_descriptions.py`. Edit either; the
+# registry test verifies they stay in sync.
+flags:
+  binary_outcome:
+    group: outcome
+    parent: outcome_type
+    introduced_in: "0.1"
+    description: "Outcome is binary (0/1)."
+    implication: "Risk-difference / risk-ratio / odds-ratio estimands; logit-link where appropriate; E-value on the right scale."
+    routes_to:
+      - python.dr.dr_learner
+      - rbridge.bartcause
+  binary_treatment:
+    group: treatment
+    parent: treatment_type
+    introduced_in: "0.1"
+    description: "The treatment column has exactly two values (0/1)."
+    implication: "Standard ATE / ATT / RD landscape — DML, matching, weighting, and meta-learners all admissible."
+    routes_to:
+      - python.dml.linear
+      - rbridge.matchit
+      - rbridge.weightit
+  bounded_outcome:
+    group: outcome
+    parent: outcome_type
+    introduced_in: "0.1"
+    description: "Outcome bounded to [0, 1] (proportion / rate)."
+    implication: "Logit-link DML; never raw OLS — it silently violates the bound. Beta-regression for fully Bayesian path."
+    routes_to:
+      - python.dml.linear
+  categorical_treatment:
+    group: treatment
+    parent: treatment_type
+    introduced_in: "0.1"
+    description: "Multi-arm or categorical treatment (>2 levels)."
+    implication: "Multi-arm estimators only; pairwise ATE contrasts may need joint FWER control."
+    routes_to:
+      - rbridge.grf.multi_arm_causal_forest
+  clustered:
+    group: structure
+    introduced_in: "0.1"
+    description: "Units nested in higher-level clusters (schools, hospitals, ...)."
+    implication: "Cluster-robust SE; cluster-CV for cross-fitting; consider multilevel TMLE; treatment-at-cluster requires different identification."
+    routes_to:
+      - python.hierarchical.dml
+  competing_risks:
+    group: outcome
+    introduced_in: "0.1"
+    description: "Survival outcome with competing-event types."
+    implication: "Fine-Gray subdistribution hazards; separable-effects (Stensrud-Young-Didelez 2022) — naive cause-specific is biased."
+    routes_to:
+      - rbridge.survrm2
+  continuous_outcome:
+    group: outcome
+    parent: outcome_type
+    introduced_in: "0.1"
+    description: "Outcome is continuous-valued."
+    implication: "Mean-difference ATE; standardised effect for E-value; DML linear is the defensible default."
+    routes_to:
+      - python.dml.linear
+      - python.dml.causal_forest
+  continuous_treatment:
+    group: treatment
+    parent: treatment_type
+    introduced_in: "0.1"
+    description: "Continuous-dose treatment."
+    implication: "Use dose-response / shift-policy estimators; partial-effect slopes; positivity needs density-ratio support."
+    routes_to:
+      - rbridge.lmtp.shift
+      - rbridge.lmtp.sdr
+      - rbridge.marginaleffects.slopes
+  count_outcome:
+    group: outcome
+    parent: outcome_type
+    introduced_in: "0.1"
+    description: "Outcome is a non-negative integer count."
+    implication: "Consider Poisson / negative-binomial nuisance; rate ratios over raw counts; ZIP if zero-inflated."
+    routes_to:
+      - python.dml.linear
+  cross_sectional_slice:
+    group: structure
+    introduced_in: "0.1"
+    description: "Single time slice with no repeated measurements."
+    implication: "Standard backdoor adjustment landscape; no panel methods; watch for selection-into-sample bias."
+    routes_to:
+      - python.dml.linear
+  diff_in_diff_candidate:
+    group: design
+    introduced_in: "0.1"
+    description: "Panel + pre/post + treated/control structure suitable for DiD."
+    implication: "Modern staggered DiD (Callaway-Sant'Anna / Borusyak-Jaravel-Spiess); HonestDiD for parallel-trends robustness; never use TWFE blindly."
+    routes_to:
+      - rbridge.did_modern.callaway_santanna
+  effect_modification_of_interest:
+    group: design
+    introduced_in: "0.1"
+    description: "The analyst explicitly wants CATE / HTE — modifiers named."
+    implication: "Causal forest at lower modifier-threshold (>= 1); BLP test; honest pre-specified subgroups beat post-hoc fishing."
+    routes_to:
+      - python.dml.causal_forest
+      - rbridge.grf.causal_forest
+  heavy_censoring:
+    group: outcome
+    introduced_in: "0.1"
+    description: ">=30% of survival observations are right-censored."
+    implication: "IPCW-aware estimators; avoid KM-based RMST without censoring covariate adjustment."
+    routes_to:
+      - rbridge.grf.causal_survival_forest
+  heavy_missingness:
+    group: sample
+    introduced_in: "0.1"
+    description: ">=20% of rows missing on at least one analysis column."
+    implication: "MICE / IPCW / TMLE-with-process-missing; never complete-case without checking MAR; OLS dropped from cascade."
+    routes_to:
+      - python.dr.dr_learner
+      - python.dml.linear
+  high_dimensional:
+    group: sample
+    introduced_in: "0.1"
+    description: "Number of covariates large relative to n (p/n >= 0.1)."
+    implication: "Sparse-DML or Lasso-final stage; stability subsampling on MB; expect wider CIs."
+    routes_to:
+      - python.dml.sparse_linear
+  identification_failed:
+    group: discovery
+    introduced_in: "0.1"
+    description: "DoWhy / ananke reports the effect is not point-identified."
+    implication: "Fall back to partial identification (autobounds), proximal CI if (NCE, NCO) exist, or refuse to report a number."
+    routes_to:
+      - identify.autobounds
+  imbalanced_treatment:
+    group: treatment
+    introduced_in: "0.1"
+    description: "Binary treatment prevalence outside [0.15, 0.85]."
+    implication: "X-learner (Künzel et al.) outperforms in this regime; check overlap diagnostics; consider trimming."
+    routes_to:
+      - python.meta.x_learner
+  instrumental_candidate_present:
+    group: design
+    introduced_in: "0.1"
+    description: "A plausible instrumental variable is named in the brief or roles."
+    implication: "IV identification path opens up; check first-stage F (partial F, Olea-Pflueger); LATE not ATE without strong assumptions."
+    routes_to:
+      - rbridge.grf.instrumental_forest
+  longitudinal:
+    group: structure
+    introduced_in: "0.1"
+    description: "Subjects observed at multiple time points."
+    implication: "Longitudinal-TMLE / lmtp; account for time-varying confounding; respect subject clusters in CV."
+    routes_to:
+      - python.dml.linear
+  mediator_proposed:
+    group: design
+    introduced_in: "0.1"
+    description: "A mediator on the T -> Y path is named in the brief."
+    implication: "NDE / NIE decomposition becomes available; front-door identification if the mediator is unconfounded by U."
+    routes_to:
+      - rbridge.mediation
+      - python.frontdoor
+  mixture_exposure:
+    group: treatment
+    parent: treatment_type
+    introduced_in: "0.1"
+    description: "Two or more concurrent treatments / a joint-exposure mixture."
+    implication: "Joint-shift estimators (lmtp.mixture); marginal-of-one-treatment claims are misleading without joint adjustment."
+    routes_to:
+      - rbridge.lmtp.mixture
+  negative_control_available:
+    group: design
+    introduced_in: "0.1"
+    description: "Negative-control exposure and/or outcome column is named."
+    implication: "NCO falsification test; proximal CI (Liu-Tchetgen-Tchetgen) point-identifies under hidden confounding when both NCE and NCO exist."
+    routes_to:
+      - python.proximal.regression
+  network_interference:
+    group: structure
+    introduced_in: "0.1"
+    description: "Units interact — treatment of one affects outcomes of neighbours."
+    implication: "Aronow-Samii / Hudgens-Halloran / Sävje-Aronow-Hudgens; SUTVA is violated; report direct + spillover effects."
+    routes_to:
+      - python.interference.aronow_samii
+      - python.interference.savje
+  panel_structure:
+    group: structure
+    introduced_in: "0.1"
+    description: "Panel data — repeated units across time."
+    implication: "DiD / synthetic control / fixed effects; cluster-CV for cross-fitting; use modern staggered-DiD methods."
+    routes_to:
+      - python.synth_control.ascm
+      - rbridge.did.callaway_santanna
+  positivity_violation:
+    group: sample
+    introduced_in: "0.1"
+    description: "Propensity score takes values near 0 or 1 in a non-trivial fraction."
+    implication: "Matching trims to support; weighting suffers tail blowup; consider Crump trimming or restricted ATT."
+    routes_to:
+      - rbridge.matchit
+      - rbridge.weightit
+  rare_outcome:
+    group: outcome
+    introduced_in: "0.1"
+    description: "Binary outcome prevalence <5% (or sparse-event survival)."
+    implication: "DR-learner with stabilised weights; Firth correction; avoid OLS / raw DML linear; power is the binding constraint."
+    routes_to:
+      - python.dr.dr_learner
+  repeated_outcome:
+    group: outcome
+    introduced_in: "0.1"
+    description: "Outcome measured at multiple time points per subject."
+    implication: "Use longitudinal estimators; GEE / mixed models for inference; cluster on subject."
+    routes_to:
+      - python.dml.linear
+  right_censored_outcome:
+    group: outcome
+    parent: outcome_type
+    introduced_in: "0.1"
+    description: "Time-to-event outcome with right-censoring (event, time)."
+    implication: "Causal survival forest (CSF) for CATE; survRM2 / Cox / Royston-Parmar for ATE / RMST; never bin to binary unless event rare."
+    routes_to:
+      - rbridge.grf.causal_survival_forest
+      - rbridge.survrm2
+  single_treated_unit:
+    group: structure
+    introduced_in: "0.1"
+    description: "Exactly one unit receives the treatment."
+    implication: "Synthetic-control / Augmented SCM / SDiD; placebo + conformal inference; standard regression is misleading."
+    routes_to:
+      - python.synth_control.scm
+      - python.synth_control.ascm
+      - python.synth_control.sdid
+  small_sample:
+    group: sample
+    introduced_in: "0.1"
+    description: "n < 100 — small-sample regime."
+    implication: "OLS with HC3 robust SE is the honest default; DML / forests overfit; report wide CIs and avoid heroic CATE."
+    routes_to:
+      - python.linear.ols
+  staggered_adoption:
+    group: design
+    introduced_in: "0.1"
+    description: "DiD with variable rollout times among treated units."
+    implication: "TWFE produces negative weights — use Callaway-Sant'Anna, BJS imputation, or de Chaisemartin-D'Haultfoeuille."
+    routes_to:
+      - rbridge.did_modern.callaway_santanna
+  suspected_informative_censoring:
+    group: outcome
+    introduced_in: "0.1"
+    description: "Censoring may depend on treatment / outcome (informative)."
+    implication: "Survival estimators with separate censoring model required; naive Kaplan-Meier / survRM2 biased."
+    routes_to:
+      - rbridge.grf.causal_survival_forest
+  time_varying_treatment:
+    group: treatment
+    introduced_in: "0.1"
+    description: "Treatment level changes within a subject over time."
+    implication: "Use longitudinal-TMLE / g-formula / lmtp longitudinal; standard DML on stacked rows is biased by time-varying confounding."
+    routes_to:
+      - rbridge.lmtp.shift
+      - rbridge.lmtp.sdr
+  zero_inflated_outcome:
+    group: outcome
+    parent: outcome_type
+    introduced_in: "0.1"
+    description: "Count outcome with >50% zeros."
+    implication: "Hurdle / ZIP estimators; separate the zero-vs-nonzero question from the conditional-on-positive intensity."
+    routes_to:
+      - python.dml.linear
