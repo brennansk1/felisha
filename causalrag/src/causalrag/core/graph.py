@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from typing import Any
 
 import networkx as nx
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 from causalrag.core.roles import VariableRole
 
@@ -50,7 +50,14 @@ class CausalGraph(BaseModel):
     roles: dict[str, VariableRole] = Field(default_factory=dict)
     rank: int = Field(default=1, description="Discovery rank — 1 is the top candidate DAG")
 
-    def to_networkx(self) -> nx.DiGraph:
+    # Cached nx projection for the internal read-only helpers below. The graph is
+    # effectively immutable post-construction (nodes/edges are tuples of frozen
+    # records), so the projection is deterministic and safe to memoise. This cache
+    # is NEVER returned to callers — public to_networkx() always builds a fresh,
+    # mutable copy so callers retain the freedom to mutate their own graph.
+    _nx_cache: nx.DiGraph | None = PrivateAttr(default=None)
+
+    def _build_networkx(self) -> nx.DiGraph:
         g: nx.DiGraph = nx.DiGraph()
         for node in self.nodes:
             g.add_node(node, role=self.roles.get(node, VariableRole.AUXILIARY).value)
@@ -77,6 +84,22 @@ class CausalGraph(BaseModel):
                     note=edge.note,
                 )
         return g
+
+    def to_networkx(self) -> nx.DiGraph:
+        """Build a fresh, mutable nx.DiGraph projection of this graph.
+
+        Always returns a new instance so callers may mutate it freely.
+        """
+        return self._build_networkx()
+
+    def _nx(self) -> nx.DiGraph:
+        """Cached read-only nx projection for internal traversal helpers.
+
+        Must NOT be mutated or returned to callers; see ``to_networkx``.
+        """
+        if self._nx_cache is None:
+            self._nx_cache = self._build_networkx()
+        return self._nx_cache
 
     @classmethod
     def from_networkx(cls, g: nx.DiGraph, rank: int = 1) -> CausalGraph:
@@ -109,13 +132,13 @@ class CausalGraph(BaseModel):
         return cls(nodes=nodes, edges=tuple(edges_out), roles=roles, rank=rank)
 
     def is_acyclic(self) -> bool:
-        return nx.is_directed_acyclic_graph(self.to_networkx())
+        return nx.is_directed_acyclic_graph(self._nx())
 
     def parents(self, node: str) -> tuple[str, ...]:
-        return tuple(self.to_networkx().predecessors(node))
+        return tuple(self._nx().predecessors(node))
 
     def descendants(self, node: str) -> frozenset[str]:
-        return frozenset(nx.descendants(self.to_networkx(), node))
+        return frozenset(nx.descendants(self._nx(), node))
 
     def variables_with_role(self, role: VariableRole) -> tuple[str, ...]:
         return tuple(n for n, r in self.roles.items() if r is role)
@@ -132,7 +155,7 @@ class CausalGraph(BaseModel):
         i = path.index(node)
         if i == 0 or i == len(path) - 1:
             return False
-        g = self.to_networkx()
+        g = self._nx()
         prev_in = g.has_edge(path[i - 1], node)
         next_in = g.has_edge(path[i + 1], node)
         return prev_in and next_in
@@ -238,6 +261,7 @@ class CausalGraph(BaseModel):
                 {
                     "source": e.source,
                     "target": e.target,
+                    "bidirected": e.bidirected,
                     "llm_proposed": e.llm_proposed,
                     "ci_test_passed": e.ci_test_passed,
                     "note": e.note,

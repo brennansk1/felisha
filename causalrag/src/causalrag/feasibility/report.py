@@ -84,10 +84,25 @@ def run_feasibility(
     flags = frozenset(protocol.flags)
     thresholds = thresholds or default_thresholds(flags)
     out: list[PowerResult] = []
+    # Memoize per-column scans (nunique / SD) so datasets with many
+    # treatment × outcome pairs do not repeat full-column passes per pair.
+    nunique_cache: dict[str, int] = {}
+    sd_cache: dict[str, float] = {}
+
+    def _t_unique(col: str) -> int:
+        if col not in nunique_cache:
+            nunique_cache[col] = int(df[col].dropna().nunique())
+        return nunique_cache[col]
+
+    def _sd_y(col: str) -> float:
+        if col not in sd_cache:
+            sd_cache[col] = float(df[col].std(ddof=1) or 1.0)
+        return sd_cache[col]
+
     for treatment, outcome in pairs:
         if treatment not in df.columns or outcome not in df.columns:
             continue
-        t_unique = df[treatment].dropna().nunique()
+        t_unique = _t_unique(treatment)
         # Default plausible band — for continuous outcome we resolve a small
         # Cohen-d-equivalent band post-hoc using outcome SD.
         band = thresholds.plausible_band
@@ -97,7 +112,7 @@ def run_feasibility(
         if not is_binary_treatment and t_unique > 2:
             # Continuous treatment path
             if band is None:
-                sd_y = float(df[outcome].std(ddof=1) or 1.0)
+                sd_y = _sd_y(outcome)
                 band = (0.2 * sd_y, 0.5 * sd_y)
             res = power_continuous_ate(
                 df,
@@ -109,7 +124,7 @@ def run_feasibility(
             )
         else:
             if band is None and DataFlag.CONTINUOUS_OUTCOME in flags:
-                sd_y = float(df[outcome].std(ddof=1) or 1.0)
+                sd_y = _sd_y(outcome)
                 band = (0.2 * sd_y, 0.5 * sd_y)
             res = power_binary_ate(
                 df,
@@ -119,6 +134,15 @@ def run_feasibility(
                 target_power=thresholds.target_power,
                 plausible_band=band,
             )
+        # Enforce the configured sample-size floor: a pair that does not meet
+        # n_floor cannot be admissible/borderline regardless of MDE.
+        if (
+            res.verdict in ("admissible", "borderline")
+            and res.n_used < thresholds.n_floor
+        ):
+            res.verdict = "underpowered"
+            floor_note = f"n_used={res.n_used} < n_floor={thresholds.n_floor}"
+            res.notes = f"{res.notes}; {floor_note}" if res.notes else floor_note
         out.append(res)
     return FeasibilityReportFull(thresholds=thresholds, results=out)
 

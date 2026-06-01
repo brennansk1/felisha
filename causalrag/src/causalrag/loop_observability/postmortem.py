@@ -22,7 +22,6 @@ Design notes
 
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -278,5 +277,9 @@ def save_postmortem(record: PostmortemRecord, path: Path) -> None:
 
 
 def load_postmortem(path: Path) -> PostmortemRecord:
-    """Round-trip helper for tests + downstream consumers."""
-    return PostmortemRecord.model_validate(json.loads(Path(path).read_text()))
+    """Round-trip helper for tests + downstream consumers.
+
+    Symmetric with :func:`save_postmortem` — both go through pydantic's
+    JSON (de)serialization.
+    """
+    return PostmortemRecord.model_validate_json(Path(path).read_text())

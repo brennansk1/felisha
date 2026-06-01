@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import inspect
 import re
+from functools import lru_cache
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -179,12 +180,18 @@ class FlowAuditReport:
 _DATAFLAG_TOKEN_RE = re.compile(r"DataFlag\.([A-Z_][A-Z0-9_]*)")
 
 
+@lru_cache(maxsize=None)
 def _module_source(module_name: str) -> str:
     """Return the source of an importable module, or ``""`` on failure.
 
     Failure-safe so the audit never crashes the build — a missing
     optional module is surfaced via empty token sets, which the audit
     treats as "no detector" / "no router".
+
+    Memoized: module source is deterministic for the life of the
+    process, and several audit passes grep the same modules (e.g.
+    ``causalrag.discovery.expert`` and ``causalrag.reporting.synthesis``
+    are each read more than once per ``audit_pipeline_flow`` call).
     """
     try:
         import importlib
@@ -325,12 +332,7 @@ def _synthesis_prompt_source() -> str:
     sensitivity-style verdicts the LLM should attend to and the builder
     function decides which panel outputs appear in the prompt at all.
     """
-    try:
-        from causalrag.reporting import synthesis as syn_mod
-
-        return inspect.getsource(syn_mod)
-    except Exception:  # noqa: BLE001
-        return ""
+    return _module_source("causalrag.reporting.synthesis")
 
 
 def _report_html_source() -> str:

@@ -36,7 +36,7 @@ from typing import Any, Literal
 import numpy as np
 import pandas as pd
 
-from causalrag.data.profiler import ColumnProfile, DatasetProfile
+from causalrag.data.profiler import DatasetProfile
 
 
 @dataclass

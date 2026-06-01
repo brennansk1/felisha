@@ -186,9 +186,10 @@ def partial_identify(
             return _trivial(
                 estimand_class, n_nodes, t0, notes, y_range=_y_range(df[outcome])
             )
-        finally:
-            # Successful path: tear the pool down cleanly.
-            pool.shutdown(wait=True)
+        # Successful path: tear the pool down cleanly. (The timeout branch
+        # already shut the pool down with wait=False and returned, so we must
+        # not re-wait here or we would block on a native-locked worker.)
+        pool.shutdown(wait=True)
     except Exception as e:
         pool.shutdown(wait=False, cancel_futures=True)
         notes.append(
@@ -366,8 +367,6 @@ def _autobounds_worker(
     # Provide the joint distribution to the problem. autobounds expects rows
     # named (T, Y, prob).
     try:
-        for row in data_payload["joint"]:
-            problem.set_p_to_zero  # noqa: B018 - sanity check
         problem.load_data(  # type: ignore[attr-defined]
             [
                 (treatment, row["t"], outcome, row["y"], row["p"])

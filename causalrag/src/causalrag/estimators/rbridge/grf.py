@@ -611,16 +611,17 @@ class GRFMultiArmForest:
         if self._forest is None:
             raise RuntimeError("Call fit() before estimate().")
         ro = r_session()
-        # multi-arm output is a data frame: contrast | estimate | std.err
-        contrasts_df_r = ro.r("as.data.frame(grf::average_treatment_effect(mac_))")
-        n_contrasts = int(list(ro.r("nrow(grf::average_treatment_effect(mac_))"))[0])
+        # multi-arm output is a data frame: contrast | estimate | std.err.
+        # Materialize it once in R, then index cells off the cached frame.
+        ro.r("mac_ate_ <- as.data.frame(grf::average_treatment_effect(mac_))")
+        n_contrasts = int(list(ro.r("nrow(mac_ate_)"))[0])
         contrasts: list[dict[str, Any]] = []
         for i in range(1, n_contrasts + 1):
             contrasts.append(
                 {
-                    "contrast": str(list(ro.r(f"grf::average_treatment_effect(mac_)[{i}, 1]"))[0]),
-                    "estimate": float(list(ro.r(f"grf::average_treatment_effect(mac_)[{i}, 2]"))[0]),
-                    "se": float(list(ro.r(f"grf::average_treatment_effect(mac_)[{i}, 3]"))[0]),
+                    "contrast": str(list(ro.r(f"mac_ate_[{i}, 1]"))[0]),
+                    "estimate": float(list(ro.r(f"mac_ate_[{i}, 2]"))[0]),
+                    "se": float(list(ro.r(f"mac_ate_[{i}, 3]"))[0]),
                 }
             )
         headline = contrasts[0] if contrasts else {"estimate": 0.0, "se": 0.0, "contrast": "—"}

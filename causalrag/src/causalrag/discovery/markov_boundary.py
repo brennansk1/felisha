@@ -88,8 +88,25 @@ def _partial_correlation_pvalue(
     return 2 * (1 - stats.norm.cdf(abs(z_stat)))
 
 
+def _numeric_view(df: pd.DataFrame, *, assume_clean: bool) -> pd.DataFrame:
+    """Return the numeric, NA-dropped view of ``df``.
+
+    ``assume_clean=True`` skips the ``select_dtypes``/``dropna`` pass when
+    the caller has already materialised a clean numeric frame, avoiding a
+    redundant full-frame scan/copy on every internal use.
+    """
+    if assume_clean:
+        return df
+    return df.select_dtypes(include="number").dropna()
+
+
 def _python_iamb(
-    df: pd.DataFrame, target: str, alpha: float, max_size: int | None
+    df: pd.DataFrame,
+    target: str,
+    alpha: float,
+    max_size: int | None,
+    *,
+    assume_clean: bool = False,
 ) -> list[str]:
     """Fallback IAMB on numeric data using Fisher's z partial correlation.
 
@@ -102,12 +119,15 @@ def _python_iamb(
     test on each iteration, which is O(|V|² · cost-of-regression). For
     p < 30 it runs in seconds; for p > 100 use bnlearn instead.
     """
-    work = df.select_dtypes(include="number").dropna()
+    work = _numeric_view(df, assume_clean=assume_clean)
     if target not in work.columns:
         return []
     cols = [c for c in work.columns if c != target]
     n = len(work)
     y = work[target].to_numpy(dtype=float)
+    # Materialise each covariate column to ndarray once, reused across all
+    # grow/shrink iterations instead of re-extracting per candidate.
+    arrs = {c: work[c].to_numpy(dtype=float) for c in cols}
 
     mb: list[str] = []
     cap = max_size if max_size is not None else len(cols)
@@ -118,12 +138,13 @@ def _python_iamb(
         changed = False
         best_p = alpha
         best_col = None
+        # The conditioning matrix is identical for every candidate in this
+        # grow step, so build it once outside the candidate loop.
+        z = np.column_stack([arrs[m] for m in mb]) if mb else None
         for c in cols:
             if c in mb:
                 continue
-            x = work[c].to_numpy(dtype=float)
-            z = work[mb].to_numpy(dtype=float) if mb else None
-            p = _partial_correlation_pvalue(x, y, z, n)
+            p = _partial_correlation_pvalue(arrs[c], y, z, n)
             if p < best_p:
                 best_p = p
                 best_col = c
@@ -137,9 +158,8 @@ def _python_iamb(
         changed = False
         for c in list(mb):
             others = [m for m in mb if m != c]
-            x = work[c].to_numpy(dtype=float)
-            z = work[others].to_numpy(dtype=float) if others else None
-            p = _partial_correlation_pvalue(x, y, z, n)
+            z = np.column_stack([arrs[m] for m in others]) if others else None
+            p = _partial_correlation_pvalue(arrs[c], y, z, n)
             if p >= alpha:
                 mb.remove(c)
                 changed = True
@@ -214,7 +234,9 @@ def discover_markov_boundary(
         )
 
     work = df[numeric_cols].dropna()
-    mb = _python_iamb(work, target=target, alpha=alpha, max_size=max_size)
+    mb = _python_iamb(
+        work, target=target, alpha=alpha, max_size=max_size, assume_clean=True
+    )
     return MarkovBoundaryReport(
         target=target,
         mb=mb,
@@ -231,7 +253,12 @@ def discover_markov_boundary(
 
 
 def _verify_mb_on_original(
-    df: pd.DataFrame, target: str, mb: list[str], alpha: float
+    df: pd.DataFrame,
+    target: str,
+    mb: list[str],
+    alpha: float,
+    *,
+    assume_clean: bool = False,
 ) -> bool:
     """Check that ``mb`` satisfies the MB definition on the original data.
 
@@ -240,7 +267,7 @@ def _verify_mb_on_original(
     distribution and should be rejected. Used as the TIE*-style verify
     step on candidate alternative MBs.
     """
-    work = df.select_dtypes(include="number").dropna()
+    work = _numeric_view(df, assume_clean=assume_clean)
     if target not in work.columns:
         return False
     n = len(work)
@@ -265,6 +292,8 @@ def _kiamb_one_run(
     max_size: int | None,
     rng: np.random.Generator,
     randomness: float = 0.5,
+    *,
+    assume_clean: bool = False,
 ) -> list[str]:
     """Stochastic IAMB (KIAMB-style).
 
@@ -274,26 +303,27 @@ def _kiamb_one_run(
     ``randomness=1`` → uniform random over surviving candidates (most
     diverse). Returns one (possibly different) MB per call.
     """
-    work = df.select_dtypes(include="number").dropna()
+    work = _numeric_view(df, assume_clean=assume_clean)
     if target not in work.columns:
         return []
     cols = [c for c in work.columns if c != target]
     n = len(work)
     y = work[target].to_numpy(dtype=float)
+    arrs = {c: work[c].to_numpy(dtype=float) for c in cols}
     mb: list[str] = []
     cap = max_size if max_size is not None else len(cols)
 
     changed = True
     while changed and len(mb) < cap:
         changed = False
-        # Score every remaining covariate
+        # Score every remaining covariate. The conditioning matrix is the
+        # same for all candidates in this grow step, so build it once.
+        z = np.column_stack([arrs[m] for m in mb]) if mb else None
         candidates: list[tuple[float, str]] = []
         for c in cols:
             if c in mb:
                 continue
-            x = work[c].to_numpy(dtype=float)
-            z = work[mb].to_numpy(dtype=float) if mb else None
-            p = _partial_correlation_pvalue(x, y, z, n)
+            p = _partial_correlation_pvalue(arrs[c], y, z, n)
             if p < alpha:
                 candidates.append((p, c))
         if not candidates:
@@ -312,9 +342,8 @@ def _kiamb_one_run(
         changed = False
         for c in list(mb):
             others = [m for m in mb if m != c]
-            x = work[c].to_numpy(dtype=float)
-            z = work[others].to_numpy(dtype=float) if others else None
-            p = _partial_correlation_pvalue(x, y, z, n)
+            z = np.column_stack([arrs[m] for m in others]) if others else None
+            p = _partial_correlation_pvalue(arrs[c], y, z, n)
             if p >= alpha:
                 mb.remove(c)
                 changed = True
@@ -376,7 +405,9 @@ def discover_multiple_mbs(
     rng = np.random.default_rng(seed)
 
     # Run 1 — deterministic (randomness=0) to anchor the primary MB
-    primary_mb = _python_iamb(work, target=target, alpha=alpha, max_size=max_size)
+    primary_mb = _python_iamb(
+        work, target=target, alpha=alpha, max_size=max_size, assume_clean=True
+    )
     found: list[list[str]] = [primary_mb] if primary_mb else []
 
     # Run 2..k — stochastic restarts
@@ -391,6 +422,7 @@ def discover_multiple_mbs(
             max_size=max_size,
             rng=rng,
             randomness=randomness,
+            assume_clean=True,
         )
         if not candidate:
             continue
@@ -399,7 +431,7 @@ def discover_multiple_mbs(
             continue
         # Verify on original distribution
         if verify_on_original and not _verify_mb_on_original(
-            work, target=target, mb=candidate, alpha=alpha
+            work, target=target, mb=candidate, alpha=alpha, assume_clean=True
         ):
             continue
         found.append(candidate)
@@ -492,7 +524,8 @@ def discover_stable_mb(
                 used_test = str(r_result.get("test", "cor"))
             else:
                 mb_b = _python_iamb(
-                    sub, target=target, alpha=alpha, max_size=max_size
+                    sub, target=target, alpha=alpha, max_size=max_size,
+                    assume_clean=True,
                 )
         except Exception as e:
             logger.warning(
@@ -500,7 +533,8 @@ def discover_stable_mb(
             )
             try:
                 mb_b = _python_iamb(
-                    sub, target=target, alpha=alpha, max_size=max_size
+                    sub, target=target, alpha=alpha, max_size=max_size,
+                    assume_clean=True,
                 )
             except Exception:
                 continue

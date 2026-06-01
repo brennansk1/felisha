@@ -129,10 +129,14 @@ def sensemakr(
         reduce=reduce,
     )
     summary: dict[str, Any] = {}
+    notes: list[str] = []
     try:
         summary = sm.summary_data().to_dict()  # type: ignore[attr-defined]
-    except Exception:
-        pass
+    except Exception as exc:  # noqa: BLE001 — benchmark is optional value-add
+        notes.append(
+            f"sensemakr.summary_data() failed ({type(exc).__name__}); "
+            "benchmark omitted."
+        )
 
     return SensemakrResult(
         treatment=treatment,
@@ -144,6 +148,7 @@ def sensemakr(
         robustness_value_q=float(getattr(sm, "robustness_value_q", 0.0) or 0.0),
         rv_qa=getattr(sm, "rv_qa", None),
         benchmark=summary,
+        notes=notes,
     )
 
 

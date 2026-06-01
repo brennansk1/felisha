@@ -198,7 +198,7 @@ def _run_causalimpact(
 
     # --- ARIMA + intervention indicator fallback -------------------------
     notes.append(
-        "causalimpact unavailable; using statsmodels SARIMAX(1,1,1) + "
+        "causalimpact unavailable; using statsmodels SARIMAX(1,0,0) + "
         "intervention-indicator fallback"
     )
     try:
@@ -778,12 +778,9 @@ def analyze_impact(
     if n_post == 0:
         raise ValueError("No post-intervention rows found.")
 
-    # Time-step level pre/post lookup used by panel methods.
-    pre_mask_time: dict[Any, bool] = {
-        t: bool(p) for t, p in zip(time_series, pre_predicate)
-    }
-    # Collapse duplicates (multiple units share the same time).
-    pre_mask_time = {}
+    # Time-step level pre/post lookup used by panel methods. Collapse
+    # duplicates (multiple units share the same time).
+    pre_mask_time: dict[Any, bool] = {}
     for t in sorted(time_series.unique()):
         if pre_period:
             pre_mask_time[t] = pre_start <= t <= pre_end

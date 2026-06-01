@@ -24,7 +24,6 @@ from typing import Any, Iterator
 
 import pandas as pd
 
-from causalrag.core.estimand import CausalEstimand, EstimandClass
 from causalrag.core.flags import DataFlag
 from causalrag.core.graph import CausalGraph
 from causalrag.core.ledger import record_decision
@@ -79,8 +78,8 @@ def _infer_treatment_outcome(
 
 def _build_default_graph(
     protocol: StudyProtocol,
-    treatment: str,
-    outcome: str,
+    treatment: str | None,
+    outcome: str | None,
 ) -> CausalGraph:
     """Pick the rank-1 candidate DAG if discovery surfaced one; otherwise
     construct a 'naive backdoor' DAG using every other variable as a
@@ -90,6 +89,13 @@ def _build_default_graph(
         return protocol.candidate_graphs[idx]
     if protocol.discovery and protocol.discovery.candidate_graphs:
         return protocol.discovery.candidate_graphs[0]
+    if treatment is None or outcome is None:
+        # No candidate graph to fall back on and no anchor (T, Y) — building
+        # a 'naive backdoor' DAG would yield degenerate (None, None) edges.
+        raise ValueError(
+            "Cannot build a default graph without a treatment and outcome "
+            "and no candidate graph is available."
+        )
     confounders: list[str] = []
     if protocol.discovery is not None:
         confounders = [
@@ -240,7 +246,11 @@ def run_auto(
     )
 
     # --- Phase 4 + 5 -- estimate + sensitivity per hypothesis -------------
-    graph = _build_default_graph(protocol, treatment, outcome)
+    try:
+        graph = _build_default_graph(protocol, treatment, outcome)
+    except ValueError as e:
+        yield AutoEvent(kind="error", phase="estimate", message=str(e))
+        return
 
     for h in hypotheses:
         if h.estimand is None:
@@ -332,16 +342,20 @@ def run_auto(
             for v in (protocol.discovery.columns if protocol.discovery else ())
             if v.role is VariableRole.CONFOUNDER and v.name in df.columns
         )
-        sm = run_sensemakr(
-            df,
-            treatment=est.treatment,
-            outcome=est.outcome,
-            covariates=confounders_for_sm,
-        )
+        try:
+            sm = run_sensemakr(
+                df,
+                treatment=est.treatment,
+                outcome=est.outcome,
+                covariates=confounders_for_sm,
+            )
+        except Exception:  # noqa: BLE001 — sensemakr is best-effort
+            sm = None
         verdict = aggregate_sensitivity(evalue=ev, sensemakr=sm, rule="min")
+        rv_str = f" RV={sm.robustness_value:.3f}." if sm is not None else ""
         walk.q8_interpretation = (
             f"Sensitivity {verdict.color}. {verdict.rationale}. "
-            f"E-value={ev.e_value:.2f} ({ev.scale}). RV={sm.robustness_value:.3f}."
+            f"E-value={ev.e_value:.2f} ({ev.scale}).{rv_str}"
         )
         record_decision(
             protocol,
@@ -362,13 +376,13 @@ def run_auto(
 
     # --- Phase 6 -- report -------------------------------------------------
     yield AutoEvent(kind="phase_start", phase="report", message="Phase 6 · report")
-    from datetime import datetime
+    from datetime import UTC, datetime
 
     from causalrag.reporting.render_html import render_report
 
     reports_dir = project_dir / "reports"
     reports_dir.mkdir(exist_ok=True)
-    ts = datetime.utcnow().strftime("%Y%m%dT%H%M%S")
+    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
     path = reports_dir / f"{protocol.name}_{ts}.{report_format}"
 
     # Load executive synthesis if the master loop produced one.

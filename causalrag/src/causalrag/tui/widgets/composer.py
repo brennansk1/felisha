@@ -19,7 +19,7 @@ from typing import ClassVar
 
 from rich.text import Text
 from textual import on
-from textual.containers import Horizontal, Vertical
+from textual.containers import Vertical
 from textual.events import Key
 from textual.message import Message
 from textual.reactive import reactive

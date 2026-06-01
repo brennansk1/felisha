@@ -78,7 +78,6 @@ def r_session():
             ) from e
         # Build the pandas↔R converter once and keep a handle.
         from rpy2.robjects import default_converter, pandas2ri
-        from rpy2.robjects.conversion import localconverter
 
         _CONVERTER = default_converter + pandas2ri.converter
         _R = ro
@@ -131,6 +130,8 @@ def converter():
     ``with rbridge.converter(): ro.conversion.py2rpy(df)``."""
     if _CONVERTER is None:
         r_session()
+    if _CONVERTER is None:
+        raise RBridgeError("R converter unavailable; R session failed to initialize.")
     from rpy2.robjects.conversion import localconverter
 
     return localconverter(_CONVERTER)

@@ -105,20 +105,6 @@ _TMLE3_SPEC_BY_ESTIMAND: dict[str, str] = {
 }
 
 
-# Default sl3 learner stack — a defensible default mixing parametric,
-# tree-based, and penalised-regression learners. Users can override.
-_DEFAULT_LEARNER_STACK_R = (
-    "make_learner_stack <- function() {{"
-    "  list("
-    "    Lrnr_glm_fast = sl3::Lrnr_glm_fast$new(),"
-    "    Lrnr_ranger = sl3::Lrnr_ranger$new(num.trees = 200),"
-    "    Lrnr_glmnet = sl3::Lrnr_glmnet$new(),"
-    "    Lrnr_mean = sl3::Lrnr_mean$new()"
-    "  )"
-    "}}"
-)
-
-
 # ---------------------------------------------------------------------------
 # 1. ATE / ATT / ATC via tmle3
 # ---------------------------------------------------------------------------
@@ -235,12 +221,6 @@ class TMLE3Estimator:
         # Build the node list (tmle3 calls Y outcome, A treatment, W baseline).
         w_vec = "c(" + ", ".join(f'"{c}"' for c in self.covariates) + ")"
         ro.r(
-            f"tmle3_nodes_ <- tmle3::tmle3_Node_List$new("
-            f'list(W = {w_vec}, A = "{self.treatment}", '
-            f'Y = "{self.outcome}"))'
-        )
-        # Fallback to the simpler dict API if Node_List class isn't exposed.
-        ro.r(
             f"tmle3_npsem_ <- list(W = {w_vec}, "
             f'A = "{self.treatment}", Y = "{self.outcome}")'
         )
@@ -304,18 +284,14 @@ class TMLE3Estimator:
         # SuperLearner CV-risk audit table — per-learner CV risk + meta-weight.
         # ``tmle3_fit$learner_fits$Y$learner_fits`` carries the Q-bar stack;
         # the cv_risk method returns a table of (learner, risk, coefficients).
-        learner_names = _safe_strings(
-            ro,
-            'as.character(tmle3_fit_$learner_fits$Y$cv_risk(loss_squared_error)$learner)',
-        )
-        risks = _safe_vector(
-            ro,
-            'as.numeric(tmle3_fit_$learner_fits$Y$cv_risk(loss_squared_error)$MSE)',
-        )
-        coefs = _safe_vector(
-            ro,
-            'as.numeric(tmle3_fit_$learner_fits$Y$cv_risk(loss_squared_error)$coefficients)',
-        )
+        # Compute it once and read learner/MSE/coefficients off the cached table.
+        try:
+            ro.r("cvr_ <- tmle3_fit_$learner_fits$Y$cv_risk(loss_squared_error)")
+        except Exception:
+            pass
+        learner_names = _safe_strings(ro, "as.character(cvr_$learner)")
+        risks = _safe_vector(ro, "as.numeric(cvr_$MSE)")
+        coefs = _safe_vector(ro, "as.numeric(cvr_$coefficients)")
         if learner_names and len(learner_names) == len(risks):
             for i, name in enumerate(learner_names):
                 self._cv_risk_rows.append(
@@ -588,18 +564,14 @@ class TMLE3MediationEstimator:
             )
 
         # Pull a single CV-risk table from the NDE fit's Y-stack (the Q-bar).
-        learner_names = _safe_strings(
-            ro,
-            'as.character(tmle3_nde_fit_$learner_fits$Y$cv_risk(loss_squared_error)$learner)',
-        )
-        risks = _safe_vector(
-            ro,
-            'as.numeric(tmle3_nde_fit_$learner_fits$Y$cv_risk(loss_squared_error)$MSE)',
-        )
-        coefs = _safe_vector(
-            ro,
-            'as.numeric(tmle3_nde_fit_$learner_fits$Y$cv_risk(loss_squared_error)$coefficients)',
-        )
+        # Compute it once and read learner/MSE/coefficients off the cached table.
+        try:
+            ro.r("cvr_nde_ <- tmle3_nde_fit_$learner_fits$Y$cv_risk(loss_squared_error)")
+        except Exception:
+            pass
+        learner_names = _safe_strings(ro, "as.character(cvr_nde_$learner)")
+        risks = _safe_vector(ro, "as.numeric(cvr_nde_$MSE)")
+        coefs = _safe_vector(ro, "as.numeric(cvr_nde_$coefficients)")
         if learner_names and len(learner_names) == len(risks):
             for i, name in enumerate(learner_names):
                 self._cv_risk_rows.append(

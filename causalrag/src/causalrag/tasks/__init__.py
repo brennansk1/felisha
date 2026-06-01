@@ -11,6 +11,9 @@ Currently exported:
       / intervention-impact analysis combining Brodersen ``CausalImpact``,
       Ben-Michael augmented SCM, and Athey matrix completion
       (Sprint 5.4).
+    * :func:`causalrag.tasks.mmm.run_mmm` — Marketing-Mix-Modelling
+      wrappers (Robyn / Meridian / PyMC-Marketing + NumPy fallback)
+      (Sprint 7.3).
 """
 
 from __future__ import annotations
@@ -69,3 +72,21 @@ except ImportError:
     pass
 else:  # pragma: no cover - executed only when geolift module exists
     __all__ += ["GeoLiftReport", "run_geolift"]
+
+# Marketing-Mix-Modelling wrappers (Sprint 7.3).
+try:  # pragma: no cover - optional sibling task
+    from causalrag.tasks.mmm import (  # noqa: F401
+        MMMChannelEffect,
+        MMMNotAvailable,
+        MMMReport,
+        run_mmm,
+    )
+except ImportError:
+    pass
+else:  # pragma: no cover - executed only when mmm module exists
+    __all__ += [
+        "MMMChannelEffect",
+        "MMMNotAvailable",
+        "MMMReport",
+        "run_mmm",
+    ]

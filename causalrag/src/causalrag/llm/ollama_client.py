@@ -346,7 +346,7 @@ class OllamaClient:
             "Your previous response failed schema validation. "
             "Return ONLY a corrected JSON object — no prose, no markdown fences.\n\n"
             f"PREVIOUS RESPONSE:\n{bad_raw}\n\n"
-            f"VALIDATION ERRORS:\n{json.dumps(errs, indent=2)}\n"
+            f"VALIDATION ERRORS:\n{json.dumps(errs, indent=2, default=str)}\n"
         )
 
     def _fetch_digest(self) -> str | None:

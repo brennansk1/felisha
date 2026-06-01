@@ -17,6 +17,39 @@ from typing import Any
 import pyarrow as pa
 
 
+def _looks_like_ndjson(p: Path) -> bool:
+    """Heuristically decide whether a JSON file is line-delimited (ndjson).
+
+    A pretty-printed single object also starts with ``{`` but spans multiple
+    lines, so the leading character alone is ambiguous. Instead we require
+    that the first two non-empty lines each parse as a complete JSON value —
+    the defining property of ndjson. A top-level array (``[``) is never
+    ndjson.
+    """
+    head = p.read_text(encoding="utf-8")[:8192].lstrip()
+    if not head or head[0] == "[":
+        return False
+
+    non_empty = [ln for ln in head.splitlines() if ln.strip()]
+    if not non_empty:
+        return False
+
+    # A single complete JSON value spanning one line is ndjson; if the first
+    # line alone fails to parse, it is almost certainly a pretty-printed
+    # (multi-line) single object/array, not ndjson.
+    try:
+        json.loads(non_empty[0])
+    except ValueError:
+        return False
+    # If there is a second line, it should also parse on its own.
+    if len(non_empty) >= 2:
+        try:
+            json.loads(non_empty[1])
+        except ValueError:
+            return False
+    return True
+
+
 @dataclass
 class JSONConnector:
     path: str | Path
@@ -29,8 +62,7 @@ class JSONConnector:
 
         is_lines = self.lines
         if is_lines is None:
-            first = p.read_text(encoding="utf-8")[:1024].lstrip()
-            is_lines = first.startswith("{")  # ndjson starts with {, arrays with [
+            is_lines = _looks_like_ndjson(p)
 
         if is_lines:
             import pyarrow.json as pa_json

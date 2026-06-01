@@ -143,7 +143,10 @@ def specification_curve(
     time_windows
         Sequence of ``(start, end)`` half-open intervals on ``time_column``.
         Pass ``None`` to keep all rows. If you pass a non-None window but no
-        ``time_column``, that spec converges with ``error="no time_column"``.
+        usable ``time_column``, that spec fails to converge
+        (``converged=False``) with
+        ``error="ValueError: time_window requested but no usable time_column
+        in DataFrame"``.
     extra_specs
         Iterable of free-form parameter overlays (each a ``dict``) appended
         to the Cartesian product. Treated as ``estimator_kwargs`` forwarded

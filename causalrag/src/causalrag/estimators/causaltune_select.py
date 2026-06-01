@@ -86,20 +86,59 @@ def _predict_outcome(
 # ---------------------------------------------------------------------------
 
 
+def _mean_abs_self(x_sorted: np.ndarray) -> float:
+    """Mean pairwise |x_i - x_j| over all i,j for a *sorted* 1-D array.
+
+    Uses the identity sum_{i,j} |x_i - x_j| = 2 * sum_i (2i - n + 1) * x_(i)
+    for sorted x_(0) <= ... <= x_(n-1), giving O(n log n) overall (the sort).
+    """
+    n = len(x_sorted)
+    if n <= 1:
+        return 0.0
+    i = np.arange(n, dtype=np.float64)
+    total = 2.0 * float(np.dot(2.0 * i - n + 1.0, x_sorted))
+    return total / (n * n)
+
+
+def _mean_abs_cross(x_sorted: np.ndarray, y_sorted: np.ndarray) -> float:
+    """Mean pairwise |x_i - y_j| over all i,j for two *sorted* 1-D arrays.
+
+    For each x_i, sum_j |x_i - y_j| = (x_i*k - prefix_below) + (suffix_above
+    - x_i*(m-k)) where k = #{y_j <= x_i}; computed via searchsorted +
+    prefix sums in O((n+m) log m).
+    """
+    n, m = len(x_sorted), len(y_sorted)
+    if n == 0 or m == 0:
+        return 0.0
+    y_cum = np.concatenate(([0.0], np.cumsum(y_sorted)))
+    total_y = y_cum[-1]
+    k = np.searchsorted(y_sorted, x_sorted, side="right")
+    below = y_cum[k]
+    above = total_y - below
+    s = x_sorted * k - below + (above - x_sorted * (m - k))
+    return float(s.sum()) / (n * m)
+
+
 def energy_distance(x: np.ndarray, y: np.ndarray) -> float:
     """Two-sample energy distance (Székely 2013).
 
     E(X, Y) = 2*E|X-Y| - E|X-X'| - E|Y-Y'|. Zero iff distributions match
     (in 1-D, identical samples up to permutation). Lower = closer.
+
+    1-D specialization: computed via sorted prefix-sum identities in
+    O(n log n) time / O(n) memory rather than materializing the O(n^2)
+    pairwise-difference matrices.
     """
     x = np.asarray(x, dtype=np.float64).reshape(-1)
     y = np.asarray(y, dtype=np.float64).reshape(-1)
     nx, ny = len(x), len(y)
     if nx == 0 or ny == 0:
         return float("inf")
-    xx = float(np.abs(x[:, None] - x[None, :]).mean())
-    yy = float(np.abs(y[:, None] - y[None, :]).mean())
-    xy = float(np.abs(x[:, None] - y[None, :]).mean())
+    xs = np.sort(x)
+    ys = np.sort(y)
+    xx = _mean_abs_self(xs)
+    yy = _mean_abs_self(ys)
+    xy = _mean_abs_cross(xs, ys)
     return 2.0 * xy - xx - yy
 
 

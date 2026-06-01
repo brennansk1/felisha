@@ -414,7 +414,7 @@ class DSPyAdapter:
     def _wrap_in_llm_response(self, dspy_output: Any, schema: type[BaseModel]) -> Any:
         """Coerce a DSPy Prediction object into something shaped like
         OllamaClient.LLMResponse."""
-        from causalrag.llm.ollama_client import LLMResponse
+        from causalrag.llm.ollama_client import LLMResponse, SchemaValidationFailed
 
         # Try to materialise the DSPy output into the requested schema.
         try:
@@ -425,15 +425,23 @@ class DSPyAdapter:
                 else dspy_output.__dict__
             )
             parsed = schema.model_validate(data)
-        except Exception:
-            parsed = None
+        except Exception as e:
+            # LLMResponse.parsed is non-optional; signal failure so the caller
+            # falls back to the fallback client instead of returning a
+            # None-parsed response.
+            raise SchemaValidationFailed(
+                [{"attempt": 1, "errors": str(e)}], str(dspy_output)
+            ) from e
         return LLMResponse(
             parsed=parsed,
             raw=str(dspy_output),
             model="dspy",
-            key="dspy",
+            model_digest=None,
+            seed=0,
+            cassette_key="dspy",
+            source="live",
             retries=0,
-            errors=[],
+            options={},
         )
 
 

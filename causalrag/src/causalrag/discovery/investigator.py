@@ -15,7 +15,7 @@ import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field
 
 from causalrag.core.roles import VariableRole, VariableSpec
-from causalrag.data.profiler import ColumnProfile, DatasetProfile
+from causalrag.data.profiler import DatasetProfile
 from causalrag.llm.honesty import with_honesty
 from causalrag.llm.ollama_client import LLMResponse, OllamaClient
 
@@ -226,16 +226,15 @@ def _validate_columns_match(report: InvestigatorReport, profile: DatasetProfile)
     if missing:
         # Add stub entries flagged as 'unknown' so downstream code never
         # encounters a missing key. Provenance: this is a Layer 2 fallback.
-        for name in profile_names:
-            if name in missing:
-                report.columns.append(
-                    InvestigatorColumn(
-                        column=name,
-                        domain_meaning=f"(LLM omitted column {name!r}; defaulted to unknown)",
-                        temporal_position="unknown",
-                        proposed_role=None,
-                    )
+        for name in missing:
+            report.columns.append(
+                InvestigatorColumn(
+                    column=name,
+                    domain_meaning=f"(LLM omitted column {name!r}; defaulted to unknown)",
+                    temporal_position="unknown",
+                    proposed_role=None,
                 )
+            )
 
 
 def to_variable_specs(

@@ -124,8 +124,15 @@ def _confounders(protocol: StudyProtocol | None, df_columns: set[str]) -> tuple[
         return ()
 
 
-def _evalue_panel(result: EstimationResult, *, outcome_dtype: str) -> SensitivityPanel:
-    ev = evalue_for_estimator(result, outcome_dtype=outcome_dtype)
+def _evalue_panel(
+    result: EstimationResult,
+    *,
+    outcome_dtype: str,
+    baseline_risk: float | None = None,
+) -> SensitivityPanel:
+    ev = evalue_for_estimator(
+        result, outcome_dtype=outcome_dtype, baseline_risk=baseline_risk
+    )
     if ev.reason is not None:
         return SensitivityPanel(
             name="e_value",
@@ -413,11 +420,26 @@ def run_sensitivity_dashboard(
     df_columns = set(getattr(df, "columns", []))
     covariates = _confounders(protocol, df_columns)
 
+    # Baseline risk is required for the risk-difference E-value branch (binary
+    # outcomes routed to RD estimators). Mirror master_loop._run_one_experiment,
+    # which computes df[outcome].mean(). Without this the binary E-value panel
+    # always degrades to the 'unknown' refusal path.
+    baseline_risk: float | None = None
+    if outcome_dtype == "binary" and outcome and outcome in df_columns:
+        try:
+            baseline_risk = float(df[outcome].mean())
+        except Exception:  # noqa: BLE001 — best-effort; None falls back cleanly
+            baseline_risk = None
+
     panels: list[SensitivityPanel] = []
 
     # 1. E-value
     try:
-        panels.append(_evalue_panel(result, outcome_dtype=outcome_dtype))
+        panels.append(
+            _evalue_panel(
+                result, outcome_dtype=outcome_dtype, baseline_risk=baseline_risk
+            )
+        )
     except Exception as exc:  # noqa: BLE001 — failure-safe
         panels.append(
             SensitivityPanel(
@@ -544,7 +566,12 @@ def run_sensitivity_dashboard(
     try:
         ev_panel = next(p for p in panels if p.name == "e_value" and p.available)
         sm_panel = next(p for p in panels if p.name == "sensemakr" and p.available)
-        if ev_panel.result.get("reason") is None and sm_panel.result.get("robustness_value") is not None:
+        if (
+            "error" not in ev_panel.result
+            and "error" not in sm_panel.result
+            and ev_panel.result.get("reason") is None
+            and sm_panel.result.get("robustness_value") is not None
+        ):
             from causalrag.sensitivity.evalue import EValueResult
             from causalrag.sensitivity.sensemakr_py import SensemakrResult
 

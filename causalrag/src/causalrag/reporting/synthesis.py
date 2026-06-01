@@ -681,7 +681,6 @@ def _enforce_confidence(
 ) -> None:
     """Apply deterministic confidence rules. Mutates ``findings`` in place."""
     rank_high = {"high": 3, "medium": 2, "low": 1}
-    rank_low = {3: "high", 2: "medium", 1: "low"}
     for f in findings:
         walk = walks_by_id.get(f.hypothesis_id)
         if walk is None or not walk.q7_estimates:
@@ -721,8 +720,6 @@ def _enforce_confidence(
                     f"finding for {f.hypothesis_id}: confidence capped at "
                     f"{new_conf!r} (was {original!r}) — n_used={est.n_used} < 100."
                 )
-        # Suppress unused-name warning
-        _ = rank_low
 
 
 def _validate_against_protocol(

@@ -260,12 +260,22 @@ class HistoryRAG:
     def add_case(self, case: HistoryCase) -> None:
         """Append a case and refresh the index.
 
-        We rebuild rather than incrementally append because TF-IDF needs
-        the global vocabulary to stay coherent and sentence-transformer
-        embeddings are cheap to recompute at this scale.
+        For TF-IDF we rebuild the full index because the global vocabulary
+        must stay coherent. For sentence-transformers the existing
+        embeddings are vocabulary-independent, so we encode only the new
+        case and append it, turning the previously O(N^2) add-loop into
+        O(N).
         """
 
         self._cases.append(case)
+        if (
+            self._backend == "sentence-transformers"
+            and self._st_model is not None
+            and self._embeddings is not None
+        ):
+            new_vec = self._embed_texts([case.text])
+            self._embeddings = np.vstack([self._embeddings, new_vec])
+            return
         self._rebuild_index()
 
     def add_from_walk(

@@ -46,7 +46,7 @@ Every decision lands in ``protocol.decision_ledger`` with
 
 from __future__ import annotations
 
-import json
+import functools
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -73,6 +73,17 @@ from causalrag.sensitivity.verdict import aggregate as aggregate_sensitivity
 
 
 _CATALOG_IDS: frozenset[str] = frozenset(spec.estimator_id for spec in CATALOG)
+
+
+@functools.lru_cache(maxsize=None)
+def _catalog_markdown_cached(flags: frozenset[DataFlag]) -> str:
+    """Cache ``catalog_markdown`` keyed on the (hashable) flag set.
+
+    The flag set is fixed for the whole run, so the planner/critic/foundation
+    prompts would otherwise rebuild the identical catalog table on every LLM
+    call. Behavior is unchanged — only the repeated work is elided.
+    """
+    return catalog_markdown(flags=set(flags))
 
 
 # ─────────── LLM schemas ──────────────────────────────────────────────────
@@ -509,16 +520,6 @@ def _dataset_context_block(protocol: StudyProtocol) -> str:
         parts.append("")
         parts.append("## Domain expert brief")
         parts.append(protocol.discovery.domain_brief[:1500])
-    # Surface identification_warnings from the brief so the LLM knows
-    # WHICH causal-inference issues the expert flagged ahead of time.
-    if (
-        protocol.discovery is not None
-        and getattr(protocol.discovery, "candidate_graphs", None)
-    ):
-        # The brief lives at the protocol level; warnings come from
-        # the in-memory DiscoveryResult (not preserved on the protocol).
-        # Surface anything the expert flagged via the brief's reasoning.
-        pass
     return "\n".join(parts)
 
 
@@ -723,6 +724,11 @@ def _build_foundation_prompt(
     parts.append("## Parent experiment result")
     if parent_walk.q3_estimand and parent_walk.q7_estimates:
         est = parent_walk.q7_estimates[-1]
+        ci_line = (
+            f"  - 95% CI: [{est.ci_low:+.4f}, {est.ci_high:+.4f}]"
+            if est.ci_low is not None and est.ci_high is not None
+            else "  - 95% CI: —"
+        )
         parts.append(
             f"  - parent_id: {parent_walk.hypothesis_id}\n"
             f"  - chain_id: {chain.chain_id}, current_depth: {chain.depth}\n"
@@ -730,9 +736,7 @@ def _build_foundation_prompt(
             f"{parent_walk.q3_estimand.outcome} "
             f"({parent_walk.q3_estimand.klass.value})\n"
             f"  - point: {est.point_estimate:+.4f}\n"
-            f"  - 95% CI: [{est.ci_low:+.4f}, {est.ci_high:+.4f}]"
-            if est.ci_low is not None and est.ci_high is not None
-            else f"  - 95% CI: —\n"
+            f"{ci_line}\n"
             f"  - sensitivity verdict: {parent_walk.sensitivity_verdict or '?'}\n"
         )
         parts.append(f"  - q8 interpretation: {parent_walk.q8_interpretation or '—'}")
@@ -764,7 +768,7 @@ def _plan_candidate_queue(
 ) -> CandidateQueue:
     prompt = _build_planner_prompt(protocol, config)
     system = _PLANNER_SYSTEM.replace(
-        "{CATALOG_TABLE}", catalog_markdown(flags=set(protocol.flags))
+        "{CATALOG_TABLE}", _catalog_markdown_cached(frozenset(protocol.flags))
     ).replace("{QUEUE_SIZE}", str(config.candidate_queue_size))
     resp = client.parse(
         prompt=prompt,
@@ -786,7 +790,7 @@ def _critic_review(
 ) -> CriticBatch:
     prompt = _build_critic_prompt(protocol, candidates, history)
     system = _CRITIC_SYSTEM.replace(
-        "{CATALOG_TABLE}", catalog_markdown(flags=set(protocol.flags))
+        "{CATALOG_TABLE}", _catalog_markdown_cached(frozenset(protocol.flags))
     )
     resp = client.parse(
         prompt=prompt,
@@ -809,7 +813,7 @@ def _foundation_followup_proposal(
 ) -> NextExperiment:
     prompt = _build_foundation_prompt(protocol, parent_walk, chain, history)
     system = _FOUNDATION_FOLLOWUP_SYSTEM.replace(
-        "{CATALOG_TABLE}", catalog_markdown(flags=set(protocol.flags))
+        "{CATALOG_TABLE}", _catalog_markdown_cached(frozenset(protocol.flags))
     )
     resp = client.parse(
         prompt=prompt,
@@ -1771,7 +1775,7 @@ def run_master_loop(
         yield LoopEvent(
             kind="log",
             phase="plan",
-            message="empty queue — falling back to per-iteration LLM proposals",
+            message="empty queue — planner returned no candidates; run will terminate",
         )
 
     # ── Phase 3: iterative propose-K → critique → commit ─────────────
@@ -1801,7 +1805,12 @@ def run_master_loop(
             next_candidate, next_chain_id, next_parent_id = pending_followups.pop(0)
         elif candidates:
             # Propose-K → critic → commit
-            top_k = [c for c in candidates if scored[c.candidate_id].get("status", "pending") != "completed"][: config.propose_k]
+            top_k = [
+                c
+                for c in candidates
+                if scored[c.candidate_id].get("status", "pending")
+                not in ("completed", "vetoed")
+            ][: config.propose_k]
             if not top_k:
                 yield LoopEvent(
                     kind="log",
@@ -1835,9 +1844,16 @@ def run_master_loop(
                         if override:
                             c.recommended_method = override
                     rejected = [c for c in top_k if c.candidate_id not in keep_ids]
-                    for c in rejected:
-                        # Drop rejected candidates from the queue.
-                        scored[c.candidate_id]["status"] = "vetoed"
+                    if rejected:
+                        # Drop rejected candidates from the queue so they are
+                        # not re-proposed (and not re-sent to the critic) on
+                        # subsequent iterations.
+                        rejected_ids = {c.candidate_id for c in rejected}
+                        for c in rejected:
+                            scored[c.candidate_id]["status"] = "vetoed"
+                        candidates = [
+                            c for c in candidates if c.candidate_id not in rejected_ids
+                        ]
                     if survivors:
                         # Pick the highest-scored survivor.
                         survivors.sort(
@@ -2175,12 +2191,16 @@ def run_master_loop(
                 message=f"no foundation child fired: {reason}",
             )
 
-        # Re-score remaining candidates with the new completed list
+        # Re-score remaining candidates with the new completed list.
+        # Preserve any prior lifecycle 'status' (e.g. 'vetoed') since
+        # score_candidate returns a fresh dict without it.
         if candidates:
             for c in candidates:
-                scored[c.candidate_id] = score_candidate(
-                    c, protocol=protocol, completed=completed
-                )
+                prior_status = scored[c.candidate_id].get("status")
+                fresh = score_candidate(c, protocol=protocol, completed=completed)
+                if prior_status is not None:
+                    fresh["status"] = prior_status
+                scored[c.candidate_id] = fresh
             candidates.sort(key=lambda c: scored[c.candidate_id]["score"], reverse=True)
             protocol.candidate_queue = _queue_to_dicts(candidates, scored)
 

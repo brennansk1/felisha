@@ -25,6 +25,7 @@ from causalrag.loop_observability.circuit_breaker import EstimatorCircuitBreaker
 from causalrag.loop_observability.postmortem import (
     PostmortemRecord,
     build_postmortem,
+    load_postmortem,
     save_postmortem,
 )
 
@@ -36,5 +37,6 @@ __all__ = [
     "PostmortemRecord",
     "TimerContext",
     "build_postmortem",
+    "load_postmortem",
     "save_postmortem",
 ]

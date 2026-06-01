@@ -17,11 +17,11 @@ from typing import TYPE_CHECKING, Any
 
 from rich.text import Text
 
-from causalrag.cli.doctor import recommend, report_dict, run_doctor
+from causalrag.cli.doctor import recommend, report_dict
 from causalrag.cli.main import PROTOCOL_FILENAME, _scaffold_project
 from causalrag.core.estimand import CausalEstimand, EstimandClass
 from causalrag.core.flags import DataFlag
-from causalrag.core.graph import CausalEdge, CausalGraph
+from causalrag.core.graph import CausalGraph
 from causalrag.core.protocol import RoadmapWalk, StudyProtocol
 from causalrag.core.roles import VariableRole
 from causalrag.discovery import run_discovery
@@ -114,8 +114,6 @@ async def run_init(app: "CausalRoadmapTUI", args: list[str]) -> None:
 async def run_doctor(app: "CausalRoadmapTUI", _args: list[str]) -> None:
     app.log_view.line("Probing hardware…", kind="dim", gutter=_spinner_glyph(0))
     await _sleep(100)
-    profile = await asyncio.to_thread(run_doctor.__wrapped__) if hasattr(run_doctor, "__wrapped__") else None
-    # Direct call (run_doctor imported from cli.doctor is the function we want)
     from causalrag.cli.doctor import run_doctor as _probe
 
     profile = await asyncio.to_thread(_probe)
@@ -487,7 +485,7 @@ async def run_estimate_cmd(app: "CausalRoadmapTUI", args: list[str]) -> None:
         app.log_view.line(f"Could not load dataset · {e}", kind="err", gutter="✗")
         return
 
-    app.log_view.line(f"Q5 · identify_effect …", kind="dim", gutter=_spinner_glyph(0))
+    app.log_view.line("Q5 · identify_effect …", kind="dim", gutter=_spinner_glyph(0))
     ident = await asyncio.to_thread(identify_effect, est, graph, df)
     app.log_view.line(
         f"Q5 · {ident.strategy} · {'identifiable' if ident.identifiable else 'NOT identifiable'}",
@@ -922,13 +920,14 @@ async def run_report(app: "CausalRoadmapTUI", args: list[str]) -> None:
         return
     protocol = StudyProtocol.read_yaml(project_path)
     app.set_phase(6)
+    from datetime import UTC
     from datetime import datetime as _dt
 
     from causalrag.reporting.render_html import render_report
 
     reports_dir = app.project_dir / "reports"
     reports_dir.mkdir(exist_ok=True)
-    ts = _dt.utcnow().strftime("%Y%m%dT%H%M%S")
+    ts = _dt.now(UTC).strftime("%Y%m%dT%H%M%S")
     path = reports_dir / f"{protocol.name}_{ts}.{fmt}"
     app.log_view.line(f"Rendering {fmt.upper()} report…", kind="dim", gutter=_spinner_glyph(0))
 
@@ -1045,7 +1044,7 @@ async def run_run(app: "CausalRoadmapTUI", args: list[str]) -> None:
         elif ev.kind == "phase_end":
             app.log_view.line(ev.message or "", kind="ok", gutter="✓")
         elif ev.kind == "card":
-            app.log_view.line(ev.message or "", kind="acc", gutter="·")
+            _render_auto_card(app, ev)
         elif ev.kind == "error":
             app.log_view.line(ev.message or "", kind="err", gutter="✗")
         else:

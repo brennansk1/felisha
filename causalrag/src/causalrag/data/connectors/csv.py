@@ -40,7 +40,13 @@ class CSVConnector:
         size = p.stat().st_size if p.exists() else None
         digest: str | None = None
         if p.exists() and size is not None and size < 200 * 1024 * 1024:
-            digest = hashlib.sha256(p.read_bytes()).hexdigest()
+            # Stream the hash in chunks rather than reading the whole file
+            # into memory; the digest is identical to read_bytes().
+            h = hashlib.sha256()
+            with p.open("rb") as fh:
+                for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                    h.update(chunk)
+            digest = h.hexdigest()
         return {
             "source": f"csv://{p}",
             "size_bytes": size,

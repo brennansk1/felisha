@@ -38,7 +38,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, Literal
+from typing import Iterable, Literal, Sequence
 
 
 Severity = Literal["green", "yellow", "red"]
@@ -268,8 +268,8 @@ def _module_import_regex(module: str) -> re.Pattern[str]:
 def detect_islands(
     package_root: Path | None = None,
     *,
-    excluded_dirs: list[str] = ("__pycache__", "tests", "docs"),
-    excluded_files: list[str] = ("__init__.py",),
+    excluded_dirs: Sequence[str] = ("__pycache__", "tests", "docs"),
+    excluded_files: Sequence[str] = ("__init__.py",),
 ) -> IslandReport:
     """Scan ``package_root`` for orphaned callables and modules.
 
@@ -324,7 +324,9 @@ def detect_islands(
         prod_refs = 0
         for path, src in prod_source.items():
             if path == defn.path:
-                continue  # the definition itself does not count
+                continue  # external references handled here; the defining
+                # file is checked separately below so the definition site
+                # itself does not count as a reference.
             if pat.search(src):
                 prod_refs += 1
                 break  # one is enough — early-exit for speed
@@ -333,6 +335,15 @@ def detect_islands(
                 if pat.search(src):
                     prod_refs += 1
                     break
+        if prod_refs == 0:
+            # Intra-module use: a callable referenced inside its own
+            # defining module (beyond the `def`/`class` statement that
+            # introduces it) is wired, not orphaned. The definition site
+            # contributes exactly one match, so >=2 matches means there
+            # is at least one genuine intra-module reference.
+            own_src = prod_source.get(defn.path, "")
+            if len(pat.findall(own_src)) >= 2:
+                prod_refs += 1
 
         if prod_refs:
             continue

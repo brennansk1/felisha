@@ -5,7 +5,7 @@ A lightweight, self-contained companion to :mod:`causalrag.llm.hardware` /
 :class:`HardwareProfile` (Ollama probes, pynvml, R, disk free), this module
 focuses on the *recommendation* axis: given a minimal hardware fingerprint,
 which three-slot model bundle (discovery / hypothesize / synthesis) should
-we suggest for the May 2026 open-weight landscape?
+we suggest for the June 2026 open-weight landscape?
 
 Tiers are curated to:
 
@@ -80,7 +80,7 @@ class TierAssignment:
     notes: list[str] = field(default_factory=list)
 
 
-# --- Curated tier map (May 2026 open-weight landscape) ----------------------
+# --- Curated tier map (June 2026 open-weight landscape) ---------------------
 #
 # Slot semantics mirror :mod:`causalrag.llm.selector`:
 #   discovery   — fast, instruction-tuned, reliable structured-JSON output
@@ -97,18 +97,18 @@ T0_LAPTOP_CPU = TierAssignment(
     tier="T0",
     profile_summary="Laptop / CPU-only, <16 GB RAM",
     discovery_model=ModelSlot(
-        name="phi-4-mini-instruct",
-        parameters_b=3.8,
+        name="qwen3.5-4b-instruct",
+        parameters_b=4.0,
         quantization="Q4_K_M",
         context=8192,
-        notes="Microsoft Phi-4-Mini; strong JSON output for sub-4B class.",
+        notes="Qwen3.5-4B Instruct; #1 sub-4B tool-caller (BFCL-V4 0.503, IFEval 89.8).",
     ),
     hypothesize_model=ModelSlot(
-        name="qwen3-1.7b-thinking",
-        parameters_b=1.7,
+        name="qwen3.5-4b-reasoning",
+        parameters_b=4.0,
         quantization="Q4_K_M",
         context=8192,
-        notes="Qwen3 1.7B with thinking trace; quality-degraded fallback only.",
+        notes="Qwen3.5-4B Reasoning; top sub-4B reasoner (GPQA-Diamond 76.2), ~3 GB Q4.",
     ),
     synthesis_model=ModelSlot(
         name="qwen3-1.7b-instruct",
@@ -128,22 +128,22 @@ T1_LAPTOP_GPU = TierAssignment(
     tier="T1",
     profile_summary="Laptop GPU or 16-24 GB Apple Silicon",
     discovery_model=ModelSlot(
-        name="qwen3-8b-instruct",
-        parameters_b=8.0,
+        name="qwen3.5-9b",
+        parameters_b=9.0,
         quantization="Q4_K_M",
         context=16384,
-        notes="Qwen3 8B Instruct; reliable structured JSON, fits in 8-12 GB VRAM.",
+        notes="Qwen3.5-9B; best-in-class ~8 GB tier (BFCL-V4 0.661, IFEval 91.5), ~6 GB Q4.",
     ),
     hypothesize_model=ModelSlot(
-        name="qwen3-8b-thinking",
-        parameters_b=8.0,
+        name="qwen3.5-9b-reasoning",
+        parameters_b=9.0,
         quantization="Q4_K_M",
         context=16384,
-        notes="Qwen3 8B with thinking traces; still sub-floor for full DAG synthesis.",
+        notes="Qwen3.5-9B Reasoning (GPQA-Diamond 81.7); outclasses prior-gen at same footprint.",
     ),
     synthesis_model=ModelSlot(
-        name="qwen3-8b-instruct",
-        parameters_b=8.0,
+        name="qwen3.5-9b",
+        parameters_b=9.0,
         quantization="Q4_K_M",
         context=16384,
         notes="Shared with discovery slot to avoid model reload on small VRAM.",
@@ -158,18 +158,18 @@ T2_DESKTOP_24GB_VRAM = TierAssignment(
     tier="T2",
     profile_summary="Desktop with 24 GB VRAM or 32 GB Apple unified memory",
     discovery_model=ModelSlot(
-        name="qwen3-14b-instruct",
-        parameters_b=14.0,
+        name="qwen3.5-27b",
+        parameters_b=27.0,
         quantization="Q4_K_M",
         context=32768,
-        notes="Qwen3 14B Instruct; primary Stage 1c investigator model.",
+        notes="Qwen3.5-27B; top 24 GB pick (BFCL-V4 0.685, ~16-18 GB Q4) — fills the 13-15B gap.",
     ),
     hypothesize_model=ModelSlot(
-        name="qwen3-14b-thinking",
-        parameters_b=14.0,
+        name="qwen3.5-27b-reasoning",
+        parameters_b=27.0,
         quantization="Q4_K_M",
         context=32768,
-        notes="Qwen3 14B with thinking traces — the FLOOR for genuine reasoning.",
+        notes="Qwen3.5-27B Reasoning — step-up to 24 GB budget; FLOOR for genuine reasoning.",
     ),
     synthesis_model=ModelSlot(
         name="phi-4-14b",
@@ -188,18 +188,18 @@ T3_DESKTOP_48GB = TierAssignment(
     tier="T3",
     profile_summary="Desktop / prosumer with 48 GB VRAM (or 64-96 GB Apple Silicon)",
     discovery_model=ModelSlot(
-        name="mistral-small-3-24b-instruct",
-        parameters_b=24.0,
-        quantization="Q5_K_M",
-        context=32768,
-        notes="Mistral-Small-3 24B; faster structured JSON than Gemma at this size.",
-    ),
-    hypothesize_model=ModelSlot(
-        name="gemma-3-27b-instruct",
+        name="qwen3.5-27b",
         parameters_b=27.0,
         quantization="Q5_K_M",
         context=32768,
-        notes="Gemma 3 27B; strong causal-language understanding for DAG proposals.",
+        notes="Qwen3.5-27B; top 24-32B discovery model (BFCL-V4 0.685), highest fit-on-one-GPU.",
+    ),
+    hypothesize_model=ModelSlot(
+        name="qwen3.5-27b-reasoning",
+        parameters_b=27.0,
+        quantization="Q5_K_M",
+        context=32768,
+        notes="Qwen3.5-27B Reasoning; benchmark-backed reasoning workhorse at the 24-32B class.",
     ),
     synthesis_model=ModelSlot(
         name="mistral-small-3-24b-instruct",
@@ -248,28 +248,28 @@ T5_DATACENTER = TierAssignment(
     tier="T5",
     profile_summary="Datacenter: dual H100/H200 (160+ GB VRAM)",
     discovery_model=ModelSlot(
-        name="llama-3.3-70b-instruct",
-        parameters_b=70.0,
+        name="qwen3.5-122b-a10b",
+        parameters_b=122.0,
         quantization="FP16",
         context=65536,
-        notes="Full-precision 70B with low-latency batched serving.",
+        notes="Qwen3.5-122B-A10B MoE; large-tier leader (BFCL-V4 0.722), ~10B active for fast serving.",
     ),
     hypothesize_model=ModelSlot(
-        name="llama-3.3-70b-instruct+spec-decoding",
-        parameters_b=70.0,
+        name="qwen3.5-122b-a10b",
+        parameters_b=122.0,
         quantization="FP16",
         context=65536,
-        notes="70B target + Llama 3.2 3B drafter; ~2-3x throughput on dual H100.",
+        notes="Qwen3.5-122B-A10B MoE; ~10B-active throughput supplants Llama-70B + drafter, stronger reasoning/IFEval.",
     ),
     synthesis_model=ModelSlot(
-        name="llama-3.3-70b-instruct",
-        parameters_b=70.0,
+        name="qwen3.5-122b-a10b",
+        parameters_b=122.0,
         quantization="FP16",
         context=131072,
-        notes="Max-context serving for end-to-end roadmap synthesis.",
+        notes="Qwen3.5-122B-A10B MoE; 160+ GB holds weights plus 128K-context KV for end-to-end synthesis.",
     ),
     notes=[
-        "Speculative decoding via causalrag.llm.spec_decoding; expect 2-3x tokens/sec.",
+        "MoE sparsity (~10B active) provides high throughput without a separate spec-decoding drafter.",
     ],
 )
 

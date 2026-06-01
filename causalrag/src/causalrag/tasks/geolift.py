@@ -591,8 +591,10 @@ def _fit_scm_and_summarize(
     ci_high = float(result.ci_high) if result.ci_high is not None else None
     p_value = float(result.p_value) if result.p_value is not None else None
     diag = result.diagnostics or {}
-    placebo_rank = int(diag.get("placebo_rank") or -1)
-    rmspe_ratio = float(diag.get("post_pre_rmspe_ratio") or float("nan"))
+    _pr = diag.get("placebo_rank")
+    placebo_rank = int(_pr) if _pr is not None else -1
+    _rr = diag.get("post_pre_rmspe_ratio")
+    rmspe_ratio = float(_rr) if _rr is not None else float("nan")
     notes.append("pysyncon SCM backend")
     return point_lift, ci_low, ci_high, p_value, placebo_rank, rmspe_ratio, notes
 

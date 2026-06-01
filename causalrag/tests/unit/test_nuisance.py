@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from causalrag.estimators.python.nuisance import (
@@ -24,7 +26,17 @@ def test_resolve_library_passes_through_explicit_choice() -> None:
 
 def test_resolve_library_picks_stacked_at_large_n() -> None:
     out = resolve_library("auto", n=1000)
-    assert out in {"stacked-default", "stacked-rich"}
+    # On macOS the LightGBM path is deliberately avoided (dual-libomp SIGSEGV),
+    # so ``auto`` routes to the sklearn-native ``stacked-fast`` instead.
+    assert out in {"stacked-default", "stacked-rich", "stacked-fast"}
+
+
+def test_resolve_library_never_selects_lightgbm_path_on_macos() -> None:
+    if sys.platform != "darwin":
+        pytest.skip("dual-libomp guard only applies on macOS")
+    # Regression guard: with lightgbm installed + n >= 500, macOS must NOT
+    # resolve to ``stacked-rich`` (which loads a second OpenMP runtime).
+    assert resolve_library("auto", n=5000) != "stacked-rich"
 
 
 def test_nuisance_models_returns_regressor_and_classifier() -> None:

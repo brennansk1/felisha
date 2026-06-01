@@ -7,7 +7,7 @@ The full command set (PDD §6, §29.1) is added in later weeks.
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -867,6 +867,13 @@ def feasibility(
     thresholds.target_power = power
 
     report = do_feasibility(df, protocol, thresholds=thresholds)
+    if not report.results:
+        console.print(
+            "[yellow]No candidate (treatment, outcome) pairs to evaluate. "
+            "Run `causalrag discover` first, or assign treatment/outcome "
+            "roles in the protocol.[/yellow]"
+        )
+        raise typer.Exit(1)
     protocol.feasibility = report.to_protocol()
     protocol.write_yaml(protocol_path)
 
@@ -927,17 +934,10 @@ def hypothesize(
         hypotheses = hypotheses_from_pairs(list(protocol.feasibility.admissible_pairs))
     else:
         # Automated path (no live LLM here — uses the cached expert brief).
+        # The structured DomainExpertBrief is not reconstructed from the
+        # persisted plain-text brief yet; the generator falls back to its
+        # deterministic path when brief is None.
         brief = None
-        try:
-            from causalrag.discovery.expert import DomainExpertBrief
-
-            if protocol.discovery and protocol.discovery.domain_brief:
-                # Brief was persisted as plain text on the protocol; we still
-                # need the structured object for the automated generator. Use
-                # deterministic fallback if not available.
-                brief = None
-        except Exception:
-            brief = None
         proposals = run_automated_hypotheses(
             protocol=protocol,
             brief=brief,
@@ -990,7 +990,7 @@ def report(
 
     reports_dir = project_dir / "reports"
     reports_dir.mkdir(exist_ok=True)
-    timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M%S")
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
     path = reports_dir / f"{protocol.name}_{timestamp}.{fmt}"
     content = render_report(protocol, fmt=fmt)
     path.write_text(content, encoding="utf-8")
@@ -1265,8 +1265,12 @@ def synthesize(
     if data_path is None and protocol.dataset and protocol.dataset.source:
         src = protocol.dataset.source.removeprefix("csv://")
         candidate = Path(src)
+        # Resolve project-relative dataset paths against project_dir, matching
+        # _load_dataframe; otherwise a relative path silently misses under cwd.
+        if not candidate.is_absolute():
+            candidate = (project_dir / candidate).resolve()
         if candidate.exists():
-            data_path = candidate.resolve()
+            data_path = candidate
     if data_path is None:
         console.print(
             "[yellow]No dataset path resolved; synthesis will run with an "

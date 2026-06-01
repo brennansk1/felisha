@@ -115,7 +115,7 @@ def _source_digraph(graph: CausalGraph) -> nx.DiGraph:
 
 
 def _is_source_identifiable(
-    graph: CausalGraph, treatment: str, outcome: str
+    graph: CausalGraph, treatment: str, outcome: str, *, dg: nx.DiGraph | None = None
 ) -> bool:
     """Pragmatic source-population identifiability check.
 
@@ -136,7 +136,8 @@ def _is_source_identifiable(
     """
     if treatment not in graph.nodes or outcome not in graph.nodes:
         return False
-    dg = _source_digraph(graph)
+    if dg is None:
+        dg = _source_digraph(graph)
     if treatment not in dg or outcome not in dg:
         return False
     if outcome not in nx.descendants(dg, treatment):
@@ -150,16 +151,19 @@ def _is_source_identifiable(
     return True
 
 
-def _adjustment_parents(graph: CausalGraph, treatment: str) -> tuple[str, ...]:
+def _adjustment_parents(
+    graph: CausalGraph, treatment: str, *, dg: nx.DiGraph | None = None
+) -> tuple[str, ...]:
     """Parents of treatment in the source graph — the backdoor adjusters."""
-    dg = _source_digraph(graph)
+    if dg is None:
+        dg = _source_digraph(graph)
     if treatment not in dg:
         return ()
     return tuple(sorted(dg.predecessors(treatment)))
 
 
 def _trial_targets(
-    graph: CausalGraph, treatment: str, outcome: str
+    graph: CausalGraph, treatment: str, outcome: str, *, dg: nx.DiGraph | None = None
 ) -> set[str]:
     """Nodes whose mechanism appears in the source-identification formula.
 
@@ -178,7 +182,7 @@ def _trial_targets(
     transported verbatim.
     """
     relevant: set[str] = {outcome, treatment}
-    relevant.update(_adjustment_parents(graph, treatment))
+    relevant.update(_adjustment_parents(graph, treatment, dg=dg))
     return relevant
 
 
@@ -258,8 +262,11 @@ def transportability_identify(
             notes=notes,
         )
 
+    # Build the source DiGraph once and reuse it across the helpers below.
+    dg = _source_digraph(graph)
+
     # 1. Source-population ID.
-    if not _is_source_identifiable(graph, treatment, outcome):
+    if not _is_source_identifiable(graph, treatment, outcome, dg=dg):
         notes.append(
             "Source-population effect P(Y|do(T)) is not identifiable; "
             "transportability is moot."
@@ -273,12 +280,12 @@ def transportability_identify(
             notes=notes,
         )
 
-    adjusters = _adjustment_parents(graph, treatment)
+    adjusters = _adjustment_parents(graph, treatment, dg=dg)
     target_label = diagram.target_population_label
 
     # 2. Identify which selection nodes touch the identification ancestry.
     differing = set(diagram.differing_variables)
-    formula_targets = _trial_targets(graph, treatment, outcome)
+    formula_targets = _trial_targets(graph, treatment, outcome, dg=dg)
 
     # Selection nodes that *don't* affect any formula term are irrelevant.
     invariant_selectors = {v for v in differing if v not in formula_targets}

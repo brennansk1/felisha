@@ -135,8 +135,8 @@ class MatchItEstimator:
         p = float(list(ro.r("mfx_$p.value"))[0])
         # Balance + diagnostics
         try:
-            sumr = ro.r("summary(match_, standardize = TRUE)$sum.matched")
-            max_smd = float(list(ro.r("max(abs(summary(match_, standardize = TRUE)$sum.matched[,3]))"))[0])
+            ro.r("matchit_summary_ <- summary(match_, standardize = TRUE)")
+            max_smd = float(list(ro.r("max(abs(matchit_summary_$sum.matched[,3]))"))[0])
         except Exception:
             max_smd = float("nan")
         return EstimationResult(

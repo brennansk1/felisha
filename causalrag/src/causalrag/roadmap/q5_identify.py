@@ -84,20 +84,16 @@ def identify_effect(
     default/fallback when no candidate yields an identifiable strategy.
     """
     if candidate_graphs:
-        last_result: IdentificationResult | None = None
         for idx, cand in enumerate(candidate_graphs):
             res = identify_effect(estimand, cand, df=df)
             if res.identifiable:
                 res.diagnostics["chose_dag"] = idx
                 return res
-            last_result = res
         # No candidate identifiable — fall back to the supplied default graph
         # and annotate diagnostics.
         fallback = identify_effect(estimand, graph, df=df)
         fallback.diagnostics["chose_dag"] = None
         fallback.diagnostics["n_candidates_tried"] = len(candidate_graphs)
-        if last_result is not None and not fallback.identifiable:
-            return fallback
         return fallback
 
     if estimand.klass not in _SUPPORTED:

@@ -85,8 +85,17 @@ OUTCOME_FLAGS: frozenset[DataFlag] = frozenset(
 def validate_flag_set(flags: set[DataFlag] | frozenset[DataFlag]) -> None:
     """Raise ValueError if the set is inconsistent (e.g., multiple treatment types).
 
-    Inheritance refinements (e.g., LONGITUDINAL → CROSS_SECTIONAL_SLICE) are
-    handled elsewhere; this function only blocks mutually-exclusive primary kinds.
+    Mutual-exclusion is enforced only over the primary-kind sets defined here:
+    TREATMENT_FLAGS (binary/categorical/continuous/mixture/time-varying) and
+    OUTCOME_FLAGS (binary/continuous/count/right-censored/repeated). The
+    remaining outcome flags — BOUNDED_OUTCOME, ZERO_INFLATED_OUTCOME,
+    RARE_OUTCOME, COMPETING_RISKS — are intentionally treated as *refinements*
+    that layer on top of a primary kind (e.g. ZERO_INFLATED_OUTCOME refines
+    COUNT_OUTCOME, RARE_OUTCOME refines BINARY_OUTCOME), so they are NOT in
+    OUTCOME_FLAGS and do not trip this check. Inheritance refinements
+    (e.g., LONGITUDINAL → CROSS_SECTIONAL_SLICE) are handled by the registry's
+    implies/forbids rules elsewhere; this function only blocks mutually-exclusive
+    primary kinds.
     """
     tx = flags & TREATMENT_FLAGS
     if len(tx) > 1:

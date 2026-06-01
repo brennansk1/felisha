@@ -12,10 +12,12 @@ inference statistician:
 4. Ranks them by **impact × identifiability × power**.
 5. Returns a HypothesisQueue ready for the per-hypothesis Roadmap walk.
 
-When an LLM client is provided we use the reasoning model to propose
-hypotheses (with the full method catalog injected so it knows what's
-possible). Otherwise we fall back to a deterministic generator that
-covers the main estimand types using the discovery-tagged roles.
+This generator uses the reasoning LLM to propose hypotheses (with the
+full method catalog injected so it knows what's possible); a live
+``OllamaClient`` is therefore required. The deterministic, no-LLM
+hypothesis path lives in :mod:`causalrag.hypothesize.automated`
+(``deterministic_proposals``), which the automated/CLI flow falls back
+to when no client is available.
 """
 
 from __future__ import annotations

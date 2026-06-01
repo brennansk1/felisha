@@ -165,39 +165,6 @@ class ConformalITEEstimator:
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
-    def _build_pseudo_outcomes(
-        self,
-        y: np.ndarray,
-        t: np.ndarray,
-        x: np.ndarray,
-        mu0: GradientBoostingRegressor,
-        mu1: GradientBoostingRegressor,
-        prop: GradientBoostingClassifier,
-    ) -> np.ndarray:
-        m0 = mu0.predict(x)
-        m1 = mu1.predict(x)
-        if self.base_learner == "t":
-            return m1 - m0
-        e = _clip_propensity(prop.predict_proba(x)[:, 1])
-        if self.base_learner == "dr":
-            return (
-                m1 - m0
-                + t * (y - m1) / e
-                - (1.0 - t) * (y - m0) / (1.0 - e)
-            )
-        # x-learner: blend treated/control imputed effects by propensity.
-        d_treated = y - m0  # for treated rows
-        d_control = m1 - y  # for control rows
-        # Use propensity as the soft assignment weight (Künzel et al. 2019).
-        return e * d_control + (1.0 - e) * d_treated * t + e * d_treated * (1 - t) * 0 + (
-            # The Künzel blend: g(x) * tau0(x) + (1-g) * tau1(x), with
-            # g = e(x) and tau0 fitted on controls, tau1 on treated. Here we
-            # approximate with the row-level pseudo-outcomes above; the final
-            # regressor smooths across rows so this row-wise target is enough
-            # to recover the CATE.
-            0.0
-        )
-
     def _pseudo_outcomes(
         self,
         y: np.ndarray,

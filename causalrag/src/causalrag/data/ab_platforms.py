@@ -57,7 +57,7 @@ class CanonicalABExperiment:
     treatment_arms: list[str]
     primary_outcome: str
     secondary_outcomes: list[str]
-    started_at: pd.Timestamp
+    started_at: pd.Timestamp | None
     ended_at: pd.Timestamp | None
     n_total: int
     per_arm_counts: dict[str, int]
@@ -88,6 +88,13 @@ def _to_ts(v: Any) -> pd.Timestamp | None:
 
 def _read_json(path: str | Path) -> dict[str, Any]:
     return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def _dropped_note(count: int) -> list[str] | None:
+    """Surface a note counting rows dropped for a missing unit identifier."""
+    if count <= 0:
+        return None
+    return [f"dropped_{count}_rows_missing_unit_id"]
 
 
 def _finalize(
@@ -128,7 +135,7 @@ def _finalize(
         treatment_arms=treatment_arms,
         primary_outcome=primary_outcome,
         secondary_outcomes=secondary_outcomes,
-        started_at=started_at if started_at is not None else pd.Timestamp("1970-01-01"),
+        started_at=started_at,
         ended_at=ended_at,
         n_total=int(len(assignment_df)),
         per_arm_counts=per_arm_counts,
@@ -166,21 +173,32 @@ def ingest_eppo_export(json_path: str | Path) -> CanonicalABExperiment:
         _first(exp, "secondary_metrics", "secondary_outcomes", default=[]) or []
     )
 
-    assignments = [
-        {
-            "unit_id": str(_first(a, "subject", "subject_id", "user_id")),
-            "arm": str(_first(a, "variation", "variant", "arm")),
-        }
-        for a in payload.get("assignments", []) or []
-    ]
-    outcomes = [
-        {
-            "unit_id": str(_first(m, "subject", "subject_id", "user_id")),
-            "outcome": str(_first(m, "metric", "metric_name", "name")),
-            "value": float(_first(m, "value", "metric_value", default=0.0) or 0.0),
-        }
-        for m in payload.get("metrics", []) or []
-    ]
+    assignments: list[dict[str, Any]] = []
+    dropped_unidentified = 0
+    for a in payload.get("assignments", []) or []:
+        unit = _first(a, "subject", "subject_id", "user_id")
+        if unit is None:
+            dropped_unidentified += 1
+            continue
+        assignments.append(
+            {
+                "unit_id": str(unit),
+                "arm": str(_first(a, "variation", "variant", "arm")),
+            }
+        )
+    outcomes: list[dict[str, Any]] = []
+    for m in payload.get("metrics", []) or []:
+        unit = _first(m, "subject", "subject_id", "user_id")
+        if unit is None:
+            dropped_unidentified += 1
+            continue
+        outcomes.append(
+            {
+                "unit_id": str(unit),
+                "outcome": str(_first(m, "metric", "metric_name", "name")),
+                "value": float(_first(m, "value", "metric_value", default=0.0) or 0.0),
+            }
+        )
 
     return _finalize(
         experiment_id=str(_first(exp, "id", "key", "experiment_id", default="")),
@@ -192,6 +210,7 @@ def ingest_eppo_export(json_path: str | Path) -> CanonicalABExperiment:
         ended_at=_to_ts(_first(exp, "end_time", "ended_at")),
         assignments=assignments,
         outcomes=outcomes,
+        notes=_dropped_note(dropped_unidentified),
     )
 
 
@@ -223,22 +242,33 @@ def ingest_statsig_export(json_path: str | Path) -> CanonicalABExperiment:
         _first(exp, "secondary_metrics", "secondaryMetrics", default=[]) or []
     )
 
-    assignments = [
-        {
-            "unit_id": str(_first(e, "unitID", "userID", "unit_id")),
-            "arm": str(_first(e, "groupID", "group", "groupName")),
-        }
-        for e in payload.get("exposures", []) or []
-    ]
+    assignments: list[dict[str, Any]] = []
+    dropped_unidentified = 0
+    for e in payload.get("exposures", []) or []:
+        unit = _first(e, "unitID", "userID", "unit_id")
+        if unit is None:
+            dropped_unidentified += 1
+            continue
+        assignments.append(
+            {
+                "unit_id": str(unit),
+                "arm": str(_first(e, "groupID", "group", "groupName")),
+            }
+        )
     metric_rows = payload.get("metric_lift") or payload.get("metrics") or []
-    outcomes = [
-        {
-            "unit_id": str(_first(m, "unitID", "userID", "unit_id")),
-            "outcome": str(_first(m, "metric", "metric_name", "name")),
-            "value": float(_first(m, "value", "metric_value", default=0.0) or 0.0),
-        }
-        for m in metric_rows
-    ]
+    outcomes: list[dict[str, Any]] = []
+    for m in metric_rows:
+        unit = _first(m, "unitID", "userID", "unit_id")
+        if unit is None:
+            dropped_unidentified += 1
+            continue
+        outcomes.append(
+            {
+                "unit_id": str(unit),
+                "outcome": str(_first(m, "metric", "metric_name", "name")),
+                "value": float(_first(m, "value", "metric_value", default=0.0) or 0.0),
+            }
+        )
 
     return _finalize(
         experiment_id=str(_first(exp, "id", "name", "experiment_id", default="")),
@@ -250,6 +280,7 @@ def ingest_statsig_export(json_path: str | Path) -> CanonicalABExperiment:
         ended_at=_to_ts(_first(exp, "endTime", "end_time")),
         assignments=assignments,
         outcomes=outcomes,
+        notes=_dropped_note(dropped_unidentified),
     )
 
 
@@ -289,6 +320,7 @@ def ingest_optimizely_export(
     assignments: list[dict[str, Any]] = []
     outcomes: list[dict[str, Any]] = []
     seen_units: set[str] = set()
+    dropped_unidentified = 0
 
     for row in rows:
         unit = str(
@@ -296,6 +328,7 @@ def ingest_optimizely_export(
         )
         arm = str(_first(row, "variation", "variation_name", "arm", default=""))
         if not unit:
+            dropped_unidentified += 1
             continue
         if unit not in seen_units:
             assignments.append({"unit_id": unit, "arm": arm})
@@ -339,6 +372,7 @@ def ingest_optimizely_export(
         ended_at=_to_ts(_first(manifest, "end_time", "ended_at")),
         assignments=assignments,
         outcomes=outcomes,
+        notes=_dropped_note(dropped_unidentified),
     )
 
 
@@ -375,23 +409,32 @@ def ingest_growthbook_export(json_path: str | Path) -> CanonicalABExperiment:
     ]
 
     assignments: list[dict[str, Any]] = []
+    dropped_unidentified = 0
     for u in payload.get("users", []) or []:
-        unit = str(_first(u, "id", "user_id", "unitID", default=""))
+        unit = _first(u, "id", "user_id", "unitID")
+        if unit is None:
+            dropped_unidentified += 1
+            continue
         var = _first(u, "variation", "variant", "arm")
         if isinstance(var, int) and 0 <= var < len(treatment_arms):
             arm = treatment_arms[var]
         else:
             arm = str(var) if var is not None else ""
-        assignments.append({"unit_id": unit, "arm": arm})
+        assignments.append({"unit_id": str(unit), "arm": arm})
 
-    outcomes = [
-        {
-            "unit_id": str(_first(m, "user_id", "id", "unitID", default="")),
-            "outcome": str(_first(m, "metric", "metric_name", "name", default="")),
-            "value": float(_first(m, "value", "metric_value", default=0.0) or 0.0),
-        }
-        for m in payload.get("metrics", []) or []
-    ]
+    outcomes: list[dict[str, Any]] = []
+    for m in payload.get("metrics", []) or []:
+        unit = _first(m, "user_id", "id", "unitID")
+        if unit is None:
+            dropped_unidentified += 1
+            continue
+        outcomes.append(
+            {
+                "unit_id": str(unit),
+                "outcome": str(_first(m, "metric", "metric_name", "name", default="")),
+                "value": float(_first(m, "value", "metric_value", default=0.0) or 0.0),
+            }
+        )
 
     return _finalize(
         experiment_id=str(
@@ -405,6 +448,7 @@ def ingest_growthbook_export(json_path: str | Path) -> CanonicalABExperiment:
         ended_at=_to_ts(_first(exp, "dateEnded", "end_time", "ended_at")),
         assignments=assignments,
         outcomes=outcomes,
+        notes=_dropped_note(dropped_unidentified),
     )
 
 
@@ -429,14 +473,15 @@ def to_target_trial(exp: CanonicalABExperiment) -> TargetTrialProtocol:
       analysis stub.
     """
     end = exp.ended_at.isoformat() if exp.ended_at is not None else "ongoing"
+    start = exp.started_at.isoformat() if exp.started_at is not None else "unknown start"
     eligibility = (
         f"Units exposed to experiment {exp.experiment_id} on the "
-        f"{exp.vendor} platform between {exp.started_at.isoformat()} "
+        f"{exp.vendor} platform between {start} "
         f"and {end} (n={exp.n_total})."
     )
     followup = (
         f"Time origin = first exposure timestamp per unit; follow-up "
-        f"window {exp.started_at.isoformat()} → {end}."
+        f"window {start} → {end}."
     )
     outcome_def = (
         f"Primary metric '{exp.primary_outcome}' as emitted by the "

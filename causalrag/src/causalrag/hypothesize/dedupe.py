@@ -21,8 +21,9 @@ This module does two passes:
    survivor list are refused. LLM failures fall back to the
    deterministic-only result — this function never re-raises.
 
-Wiring into ``master_loop.py`` is intentionally NOT done here; that's a
-separate, narrow change.
+``dedupe_candidates`` is wired into ``master_loop.py``'s plan phase
+(around the candidate-queue planner), invoked inside a try/except that
+degrades to the deterministic-only result on any failure.
 """
 
 from __future__ import annotations

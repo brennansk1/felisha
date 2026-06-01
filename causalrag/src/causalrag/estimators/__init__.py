@@ -22,6 +22,10 @@ def _try_import_rbridge() -> None:
         "bartcause",
         "weighting",
         "marginaleffects",
+        "rd",
+        "did_modern",
+        "tmle3",
+        "trial_emulation",
     ):
         try:
             __import__(f"causalrag.estimators.rbridge.{mod}")

@@ -28,8 +28,17 @@ class FeatherConnector:
         p = Path(self.path)
         if not p.exists():
             return {"source": f"feather://{p}", "exists": False}
-        # Feather files don't expose metadata without reading the schema
-        schema = pa_feather.read_table(p, columns=None).schema
+        # Read only the schema/footer, not the full table. Feather V2 is
+        # Arrow IPC file format, so open_file exposes the schema without
+        # materializing any record batches. Fall back to a zero-column read
+        # for legacy V1 files that open_file can't parse.
+        try:
+            import pyarrow.ipc as pa_ipc
+
+            with pa.memory_map(str(p), "r") as source:
+                schema = pa_ipc.open_file(source).schema
+        except (pa.ArrowInvalid, OSError):
+            schema = pa_feather.read_table(p, columns=[]).schema
         return {
             "source": f"feather://{p}",
             "num_columns": len(schema.names),

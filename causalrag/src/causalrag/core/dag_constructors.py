@@ -1,11 +1,15 @@
 """Pure DAG-topology constructors for common identification patterns.
 
 These helpers produce :class:`CausalGraph` objects with appropriate
-role assignments. They are intentionally side-effect-free: callers
-(notably ``master_loop._build_graph_for_proposal``) compose them with
-brief metadata to materialise the topology corresponding to a proposed
-identification strategy (backdoor, IV, front-door, multi-mediator
-chain, proximal).
+role assignments. They are intentionally side-effect-free, building the
+topology corresponding to a proposed identification strategy (backdoor,
+IV, front-door, multi-mediator chain, proximal).
+
+NOTE: as of this writing these constructors are not wired into the
+production master loop — ``master_loop._build_graph_for_proposal``
+builds its ``CausalEdge``/``CausalGraph`` objects inline rather than
+composing these helpers. They are exercised by the unit tests and are
+available for callers that want canonical per-pattern topologies.
 
 See PDD §13 (core/graph.py) and §33 sprint 6.5.8.
 """

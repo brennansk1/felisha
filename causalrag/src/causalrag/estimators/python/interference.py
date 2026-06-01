@@ -339,13 +339,11 @@ class SavjeAronowHudgensEstimator:
         informative = deg > 0
         corrected = ht_terms.copy()
         slope = 0.0
-        intercept = 0.0
         if informative.sum() >= 2:
             x_dev = exposure[informative] - p
             y_inf = ht_terms[informative]
             if np.std(x_dev) > 1e-12:
                 slope = float(np.cov(x_dev, y_inf, ddof=0)[0, 1] / np.var(x_dev))
-                intercept = float(y_inf.mean() - slope * x_dev.mean())
                 corrected = ht_terms - slope * (exposure - p)
 
         point = float(corrected.mean())
@@ -359,7 +357,6 @@ class SavjeAronowHudgensEstimator:
         self._p_hat = p
         self._n_used = n
         self._slope = slope
-        self._intercept = intercept
         self._fit_seconds = time.perf_counter() - start
         return self
 

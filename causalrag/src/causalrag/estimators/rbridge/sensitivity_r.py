@@ -136,18 +136,16 @@ def evalue_r(
     if fn == "evalues.OR" and outcome_prevalence is not None:
         args.append(f"rare = {'FALSE' if outcome_prevalence > 0.15 else 'TRUE'}")
     expr = f"EValue::{fn}({', '.join(args)})"
-    res = ro.r(expr)
-    # The R result is a 2x3 matrix; first row is the estimate, second is the CI bound
-    # Column 2 is the E-value
-    mat = ro.r(f"as.matrix({expr})")
-    rows = ro.r("nrow(M_ <- as.matrix(E_obj_ <- {})); rownames(M_)".format(expr))
-    e_point = float(list(ro.r("as.matrix({})['E-values','point']".format(expr)))[0])
+    # The R result is a matrix whose 'E-values' row holds the point estimate and
+    # CI bounds. Materialize it once in R, then read individual cells off it.
+    ro.r(f"E_mat_ <- as.matrix({expr})")
+    e_point = float(list(ro.r("E_mat_['E-values','point']"))[0])
     try:
-        e_lo = float(list(ro.r("as.matrix({})['E-values','lower']".format(expr)))[0])
+        e_lo = float(list(ro.r("E_mat_['E-values','lower']"))[0])
     except Exception:
         e_lo = None
     try:
-        e_hi = float(list(ro.r("as.matrix({})['E-values','upper']".format(expr)))[0])
+        e_hi = float(list(ro.r("E_mat_['E-values','upper']"))[0])
     except Exception:
         e_hi = None
     return {

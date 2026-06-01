@@ -207,7 +207,7 @@ def _corrective_messages(
             "content": (
                 "Your previous response failed schema validation. Return ONLY a "
                 "corrected JSON object — no prose, no markdown fences.\n\n"
-                f"VALIDATION ERRORS:\n{json.dumps(errs, indent=2)}"
+                f"VALIDATION ERRORS:\n{json.dumps(errs, indent=2, default=str)}"
             ),
         }
     )

@@ -135,19 +135,14 @@ def _correlation_pruning(
     for c in order:
         if c in dropped:
             continue
-        if c in kept:
-            keep_decision = True
-        else:
-            keep_decision = True
-        if keep_decision:
-            kept.add(c)
-            for other in numeric.columns:
-                if other in kept or other in dropped:
-                    continue
-                if other in pinned:
-                    continue
-                if corr.loc[c, other] >= threshold:
-                    dropped[other] = f"|r|={corr.loc[c, other]:.3f} with kept variable {c}"
+        kept.add(c)
+        for other in numeric.columns:
+            if other in kept or other in dropped:
+                continue
+            if other in pinned:
+                continue
+            if corr.loc[c, other] >= threshold:
+                dropped[other] = f"|r|={corr.loc[c, other]:.3f} with kept variable {c}"
     # Non-numeric candidates flow through unchanged
     non_numeric = [c for c in cols if c not in numeric.columns]
     selected = [c for c in cols if c in kept or c in non_numeric]

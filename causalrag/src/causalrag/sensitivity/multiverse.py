@@ -12,6 +12,7 @@ report renderer plots this as a forest / specification curve.
 
 from __future__ import annotations
 
+import statistics
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -57,7 +58,7 @@ class MultiverseResultFull:
             "n": n,
             "min": points_sorted[0],
             "max": points_sorted[-1],
-            "median": points_sorted[n // 2],
+            "median": statistics.median(points),
             "fraction_same_sign": float(
                 sum(1 for p in points if (p > 0) == (self.headline_point > 0)) / n
             ),

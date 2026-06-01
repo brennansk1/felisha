@@ -230,7 +230,7 @@ class IbisConnector:
             fraction = min(1.0, max(n / total * 1.2, 1e-9))  # 20% headroom
             sampled = t.sample(fraction, seed=seed).limit(n)
             return sampled.to_pyarrow()
-        except (AttributeError, NotImplementedError, Exception):
+        except (AttributeError, NotImplementedError):
             try:
                 sampled = t.order_by(ibis.random()).limit(n)
                 return sampled.to_pyarrow()

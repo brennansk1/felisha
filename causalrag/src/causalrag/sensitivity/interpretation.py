@@ -29,7 +29,7 @@ Design contract:
 from __future__ import annotations
 
 import warnings
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -496,11 +496,11 @@ def interpret_sensitivity(
         domain_label=domain_label,
     )
 
-    # 3. Call the LLM. Any failure → fallback default. We catch BaseException
-    # rather than Exception so a misbehaving transport (timeouts that raise
-    # KeyboardInterrupt-like errors in some httpx versions) still degrades
-    # gracefully — sensitivity interpretation is best-effort prose, not a
-    # load-bearing artifact.
+    # 3. Call the LLM. Any failure → fallback default. We catch Exception so a
+    # misbehaving transport (timeouts, parse errors) still degrades gracefully
+    # — sensitivity interpretation is best-effort prose, not a load-bearing
+    # artifact. KeyboardInterrupt/SystemExit (BaseException-only) intentionally
+    # propagate so the operator can still abort a run.
     try:
         response = client.parse(
             prompt=prompt,
@@ -540,13 +540,3 @@ __all__ = [
     "VerdictColor",
     "interpret_sensitivity",
 ]
-
-
-# Expose a helper for tests / callers that need to see what was inferred.
-def _infer_domain_for_test(brief: str | None) -> str:
-    """Test-only re-export of the domain inference heuristic."""
-    return _infer_domain(brief)
-
-
-# Keep an unused-name suppressor for Any import (kept for forward-compat).
-_ANY: Any = None

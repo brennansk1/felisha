@@ -127,7 +127,7 @@ def ananke_identify(
         return _fallback_result(graph, treatment, outcome, estimand_class)
 
     try:
-        return _ananke_path(ananke_mod, graph, treatment, outcome, estimand_class)
+        return _ananke_path(graph, treatment, outcome, estimand_class)
     except Exception as exc:  # noqa: BLE001 — defensive boundary
         # Any failure inside ananke should degrade to the fallback, with the
         # exception type+message captured as a warning.
@@ -212,7 +212,7 @@ def _try_import_ananke() -> Any | None:
         return None
 
 
-def _graph_to_admg(ananke_mod: Any, graph: CausalGraph) -> Any:
+def _graph_to_admg(graph: CausalGraph) -> Any:
     """Convert :class:`CausalGraph` into ``ananke.graphs.ADMG``."""
     admg_cls = importlib.import_module("ananke.graphs").ADMG
     vertices = list(graph.nodes)
@@ -227,7 +227,6 @@ def _graph_to_admg(ananke_mod: Any, graph: CausalGraph) -> Any:
 
 
 def _ananke_path(
-    ananke_mod: Any,
     graph: CausalGraph,
     treatment: str,
     outcome: str,
@@ -235,7 +234,7 @@ def _ananke_path(
 ) -> AnankeIDResult:
     """Run the actual ananke probes. Raises on unrecoverable errors."""
     ident_mod = importlib.import_module("ananke.identification")
-    admg = _graph_to_admg(ananke_mod, graph)
+    admg = _graph_to_admg(graph)
 
     proof_steps: list[str] = [
         f"Converted CausalGraph to ADMG with "

@@ -26,11 +26,16 @@ Library catalog (highest expected payoff first under each category):
 - ``auto`` — picks ``stacked-rich`` if lightgbm is installed and n ≥ 500,
   else ``stacked-default`` if n ≥ 500, else ``single-gbm``. When the
   ``HEAVY_MISSINGNESS`` flag is present, ``hist-gbm`` is preferred at small
-  n because it avoids the dropna() penalty.
+  n because it avoids the dropna() penalty. **On macOS**, ``auto`` never
+  selects the LightGBM path — see :func:`resolve_library` — and falls back to
+  ``stacked-fast`` (sklearn-native HistGBM, same model diversity) to avoid a
+  fatal dual-OpenMP-runtime conflict between LightGBM's bundled ``libomp`` and
+  scikit-learn's bundled ``libomp``.
 """
 
 from __future__ import annotations
 
+import sys
 from typing import Any, Literal
 
 Library = Literal[
@@ -45,12 +50,16 @@ Library = Literal[
 
 
 def _has_lightgbm() -> bool:
-    try:
-        import lightgbm  # noqa: F401
+    # IMPORTANT: probe with ``find_spec`` rather than ``import lightgbm``.
+    # Importing lightgbm loads ``lib_lightgbm.dylib`` and its bundled
+    # ``libomp`` into the process; on macOS that second OpenMP runtime
+    # collides with scikit-learn's bundled ``libomp`` and SIGSEGVs under load
+    # (see :func:`resolve_library`). ``find_spec`` only *locates* the package,
+    # so the dual-runtime is never loaded unless a caller explicitly builds a
+    # LightGBM model via ``library="stacked-rich"``.
+    import importlib.util
 
-        return True
-    except ImportError:
-        return False
+    return importlib.util.find_spec("lightgbm") is not None
 
 
 def _has_pymc_bart() -> bool:
@@ -124,6 +133,16 @@ def resolve_library(
     if (n or 0) < 500:
         return "single-gbm"
     if _has_lightgbm():
+        # macOS ships scikit-learn and LightGBM each with their *own* bundled
+        # ``libomp`` (sklearn/.dylibs/libomp.dylib vs LightGBM's @rpath
+        # /opt/homebrew/opt/libomp). Loading both OpenMP runtimes into one
+        # process corrupts libomp barrier/team state and SIGSEGVs under load
+        # (crash site: LightGBM ``Booster::Predict`` -> ``__kmpc_fork_call`` ->
+        # ``__kmp_suspend_initialize_thread``). ``stacked-fast`` is HistGBM-
+        # based and sklearn-native, so the process keeps a single OpenMP
+        # runtime. LightGBM remains available via explicit ``stacked-rich``.
+        if sys.platform == "darwin":
+            return "stacked-fast"
         return "stacked-rich"
     return "stacked-default"
 
@@ -214,6 +233,8 @@ class _BARTSklearnRegressor:
         self.random_state = random_state
         self._idata: Any = None
         self._x_shape: tuple[int, int] | None = None
+        self._model: Any = None
+        self._x_data: Any = None
         self.diagnostics_: dict[str, Any] = {}
 
     def fit(self, X, y):  # type: ignore[no-untyped-def]
@@ -246,6 +267,8 @@ class _BARTSklearnRegressor:
         import numpy as np
         import pymc as pm
 
+        if self._model is None:
+            raise RuntimeError("call fit() before predict()")
         x = np.asarray(X, dtype=float)
         with self._model:
             pm.set_data({"x_data": x})
@@ -437,12 +460,6 @@ def nuisance_models(
             random_state, library=library, cv=cv, n=n, heavy_missing=heavy_missing
         ),
     )
-
-
-# Back-compat alias for callers that still pass ``mode=``.
-def _legacy_nuisance_models(random_state: int = 42, *, mode: str = "auto") -> tuple[Any, Any]:
-    library_map = {"stacked": "stacked-default", "single": "single-gbm", "auto": "auto"}
-    return nuisance_models(random_state, library=library_map.get(mode, "auto"))  # type: ignore[arg-type]
 
 
 __all__ = [

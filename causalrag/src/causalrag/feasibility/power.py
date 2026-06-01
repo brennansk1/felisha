@@ -86,9 +86,25 @@ def power_binary_ate(
             notes="n < 30; cannot reliably estimate MDE",
             verdict="underpowered",
         )
-    t = work[treatment].astype(float).to_numpy()
-    n1 = int((t == 1).sum())
-    n0 = int((t == 0).sum())
+    # Encode the binary treatment by its two observed distinct values rather
+    # than assuming numeric {0, 1}. This handles string labels ('yes'/'no')
+    # and arbitrary numeric codings ({1, 2}, {-1, 1}, …) without crashing or
+    # silently miscounting arms.
+    t_raw = work[treatment]
+    vals = sorted(t_raw.dropna().unique(), key=lambda v: str(v))
+    if len(vals) != 2:
+        return PowerResult(
+            treatment=treatment,
+            outcome=outcome,
+            family="binary_ate",
+            n_used=n,
+            mde=float("inf"),
+            mde_units="—",
+            notes=f"treatment is not binary (distinct values={len(vals)})",
+            verdict="underpowered",
+        )
+    n0 = int((t_raw == vals[0]).sum())
+    n1 = int((t_raw == vals[1]).sum())
     if n1 < 2 or n0 < 2:
         return PowerResult(
             treatment=treatment,

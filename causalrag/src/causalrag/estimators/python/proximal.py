@@ -324,10 +324,16 @@ class ProximalRegressionEstimator:
             self._contrasts = None
             self._cross_fit_used = False
 
-        # Always also compute the single-fit estimate for diagnostics.
-        self._point_single_fit = _two_stage_ate(
-            self._y, self._t, self._x, self._z, self._w, self.ridge_alpha
-        )
+        # Record the single-fit estimate for diagnostics. When cross-fitting was
+        # not used, ``point`` already *is* the single-fit value (identical
+        # deterministic inputs to ``_two_stage_ate``), so reuse it rather than
+        # repeating the fit.
+        if self._cross_fit_used:
+            self._point_single_fit = _two_stage_ate(
+                self._y, self._t, self._x, self._z, self._w, self.ridge_alpha
+            )
+        else:
+            self._point_single_fit = point
 
         self._fit_seconds = time.perf_counter() - start
 

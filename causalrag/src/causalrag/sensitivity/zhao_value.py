@@ -101,8 +101,6 @@ def _verdict_for_gamma(gamma: float) -> ZhaoVerdict:
     Γ = 1.0 exactly is "red" — no bias at all is required to overturn.
     Γ between 1.0 and 1.5 is also "red". 1.5–2.0 yellow. ≥2.0 green.
     """
-    if gamma <= 1.0:
-        return "red"
     if gamma < 1.5:
         return "red"
     if gamma < 2.0:

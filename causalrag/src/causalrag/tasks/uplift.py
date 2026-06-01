@@ -464,7 +464,6 @@ def policy_tree(
 
     # ---- R policytree fallback ----------------------------------------
     try:  # pragma: no cover - exercised only when rpy2+policytree installed
-        import rpy2.robjects as ro  # type: ignore[import-not-found]
         from rpy2.robjects import numpy2ri, pandas2ri  # type: ignore[import-not-found]
         from rpy2.robjects.packages import importr  # type: ignore[import-not-found]
 

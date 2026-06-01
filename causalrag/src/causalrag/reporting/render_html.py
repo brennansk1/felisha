@@ -26,7 +26,7 @@ The report includes:
 from __future__ import annotations
 
 import html
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from causalrag.core.protocol import StudyProtocol
@@ -185,7 +185,7 @@ def _cover(protocol: StudyProtocol) -> str:
         ("version", protocol.version),
         ("created", protocol.created.isoformat(timespec="seconds")),
         ("updated", protocol.updated.isoformat(timespec="seconds")),
-        ("generated", datetime.utcnow().isoformat(timespec="seconds") + "Z"),
+        ("generated", datetime.now(UTC).isoformat(timespec="seconds")),
     ]
     if protocol.dataset:
         rows.append(("source", protocol.dataset.source))
@@ -206,9 +206,14 @@ def _discovery_section(protocol: StudyProtocol) -> str:
     try:
         from causalrag.core.flag_descriptions import describe_safe
 
+        # describe_safe is deterministic per flag; compute once and reuse
+        # for both the chip row and the collapsible semantics block.
+        flag_descs = [
+            (f, describe_safe(f))
+            for f in sorted(protocol.flags, key=lambda x: x.value)
+        ]
         flag_rows: list[str] = []
-        for f in sorted(protocol.flags, key=lambda x: x.value):
-            d = describe_safe(f)
+        for f, d in flag_descs:
             tooltip = f"{d.summary} · {d.implication}"
             flag_rows.append(
                 f"<span class='chip acc' title='{_e(tooltip)}'>{_e(f.value)}</span>"
@@ -219,8 +224,7 @@ def _discovery_section(protocol: StudyProtocol) -> str:
             # Render full semantics in a collapsible block so the
             # report stays self-explanatory for non-LLM readers.
             out.append("<details><summary>What each flag means</summary><ul>")
-            for f in sorted(protocol.flags, key=lambda x: x.value):
-                d = describe_safe(f)
+            for f, d in flag_descs:
                 out.append(
                     f"<li><code>{_e(f.value)}</code> — {_e(d.summary)} "
                     f"<em>{_e(d.implication)}</em></li>"
@@ -318,13 +322,19 @@ def _walks_section(protocol: StudyProtocol) -> str:
         out.append("<h3>Multiple-hypothesis summary (BH-adjusted)</h3>")
         out.append("<table><thead><tr><th>Hypothesis</th><th>Point</th><th>95% CI</th><th>p (raw)</th><th>p (BH)</th></tr></thead><tbody>")
         for (key, est), q_adj in zip(estimates, bh):
-            ci = f"[{est.ci_low:+.4f}, {est.ci_high:+.4f}]" if est.ci_low is not None else "—"
+            ci = (
+                f"[{est.ci_low:+.4f}, {est.ci_high:+.4f}]"
+                if est.ci_low is not None and est.ci_high is not None
+                else "—"
+            )
+            p_raw = f"{est.p_value:.4g}" if est.p_value is not None else "—"
+            q_str = f"{q_adj:.4g}"
             out.append(
                 f"<tr><td><code>{_e(key)}</code></td>"
                 f"<td class='num'>{est.point_estimate:+.4f}</td>"
                 f"<td class='num'>{ci}</td>"
-                f"<td class='num'>{est.p_value:.4g if est.p_value else '—'}</td>"
-                f"<td class='num'>{q_adj:.4g}</td></tr>"
+                f"<td class='num'>{p_raw}</td>"
+                f"<td class='num'>{q_str}</td></tr>"
             )
         out.append("</tbody></table>")
     # Per-walk details
@@ -632,7 +642,7 @@ def _render_markdown(
             est = walk.q7_estimates[-1]
             lines.append(f"- estimator: `{est.estimator_id}`")
             lines.append(f"- point: {est.point_estimate:+.4f}")
-            if est.ci_low is not None:
+            if est.ci_low is not None and est.ci_high is not None:
                 lines.append(f"- 95% CI: [{est.ci_low:+.4f}, {est.ci_high:+.4f}]")
             if est.p_value is not None:
                 lines.append(f"- p-value: {est.p_value:.4g}")

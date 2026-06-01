@@ -344,7 +344,6 @@ class CITester:
         """
         from causallearn.utils.cit import CIT
 
-        n = x.shape[0]
         if z is None or z.size == 0:
             data = np.column_stack([x, y]).astype(float)
             cit = CIT(data, cit_kind)
@@ -378,28 +377,6 @@ class CITester:
             return result
         df = None if z is None else int(z.shape[1])
         return CITestResult(p, None, "rcit", df, list(self.notes))
-
-    # The CCIT / RCoT / CMIknn methods named in the PDD signature are
-    # provided as aliases so the sprint-plan vocabulary works at the
-    # public surface even though _resolve degrades them today.
-    def _rcot(self, x: np.ndarray, y: np.ndarray, z: np.ndarray | None) -> CITestResult:
-        """Alias for :meth:`_rcit` — the PDD uses the older name 'RCoT'."""
-        return self._rcit(x, y, z)
-
-    def _kcit(self, x: np.ndarray, y: np.ndarray, z: np.ndarray | None) -> CITestResult:
-        """Alias for :meth:`_kci` — the PDD uses the older name 'KCIT'."""
-        return self._kci(x, y, z)
-
-    def _ccit(self, x: np.ndarray, y: np.ndarray, z: np.ndarray | None) -> CITestResult:
-        """Placeholder for CCIT (Sen et al. 2017) — degrades to fisher-z.
-
-        Wired here so the public surface matches the sprint-plan
-        signature; a future ticket replaces the body with a real
-        classifier-CI implementation.
-        """
-        result = self._fisher_z(x, y, z)
-        result.notes.append("ccit not yet wired; used fisher_z")
-        return result
 
 
 __all__ = ["CITester", "CITestResult"]

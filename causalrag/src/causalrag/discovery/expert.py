@@ -446,12 +446,9 @@ def _validate_confounders_statistically(
     for claim in brief.confounders:
         if claim.treatment not in df.columns or claim.outcome not in df.columns:
             continue
-        t_series = df[claim.treatment].dropna()
-        y_series = df[claim.outcome].dropna()
         for c in claim.confounders:
             if c not in df.columns:
                 continue
-            c_series = df[c].dropna()
             joined = df[[claim.treatment, claim.outcome, c]].dropna()
             if len(joined) < 30:
                 out.append(

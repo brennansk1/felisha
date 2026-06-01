@@ -155,6 +155,11 @@ def recommend_spec_config(
     draft = _DRAFT_MODEL_REGISTRY.get(target_model)
     if draft is None:
         return None
+    if method not in _METHOD_DEFAULTS:
+        raise ValueError(
+            f"unknown spec-decoding method {method!r}; "
+            f"expected one of {sorted(_METHOD_DEFAULTS)}"
+        )
     defaults = _METHOD_DEFAULTS[method]
     return SpecDecodingConfig(
         draft_model=draft,
@@ -215,7 +220,13 @@ def estimate_speedup(
     # Higher acceptance thresholds reject more drafts → smaller speedup.
     threshold_penalty = 0.4 * accept_threshold
     # Method nudge: EAGLE-3 > EAGLE-2 > n-gram for transformer targets.
-    method_bonus = {"eagle3": 0.1, "auto": 0.1, "eagle2": 0.0, "n_gram": -0.1}[method]
+    _method_bonus = {"eagle3": 0.1, "auto": 0.1, "eagle2": 0.0, "n_gram": -0.1}
+    if method not in _method_bonus:
+        raise ValueError(
+            f"unknown spec-decoding method {method!r}; "
+            f"expected one of {sorted(_method_bonus)}"
+        )
+    method_bonus = _method_bonus[method]
 
     peak = base_peak + spec_n_bonus - threshold_penalty + method_bonus
     peak = max(1.0, min(peak, 2.5))

@@ -216,8 +216,8 @@ def evalue(
             # VanderWeele-Vansteelandt approximation
             denom = 1 - outcome_prevalence + outcome_prevalence * point_estimate
             rr = point_estimate / denom
-            rr_low = ci_low / (1 - outcome_prevalence + outcome_prevalence * ci_low) if ci_low else None
-            rr_high = ci_high / (1 - outcome_prevalence + outcome_prevalence * ci_high) if ci_high else None
+            rr_low = ci_low / (1 - outcome_prevalence + outcome_prevalence * ci_low) if ci_low is not None else None
+            rr_high = ci_high / (1 - outcome_prevalence + outcome_prevalence * ci_high) if ci_high is not None else None
         else:
             rr = math.sqrt(point_estimate)
             rr_low = math.sqrt(ci_low) if ci_low is not None and ci_low > 0 else None

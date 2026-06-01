@@ -278,21 +278,20 @@ def _attribute_multiply_robust(
     candidates: list[str],
     notes: list[str],
 ) -> tuple[dict[str, float], dict[str, float | None], ResolvedMethod]:
-    """DR-style contribution per candidate column.
+    """Plug-in outcome-model contribution per candidate column.
 
     For each column X we compute
         E[Y | X = X_after, W = W_before] - E[Y | X = X_before, W = W_before]
     where ``W`` are the remaining candidates held at their before-period
     distribution. This is the classical "Kitagawa-Oaxaca-Blinder"
     counterfactual decomposition under unconfoundedness, estimated with
-    a gradient-boosting outcome model. The propensity step augments the
-    plug-in estimate with a doubly-robust correction.
+    a gradient-boosting outcome model. Shares are rescaled to the observed
+    total change, with the model/observed gap absorbed by the residual
+    bucket. (The resolved-method label remains ``"multiply_robust"`` for
+    API stability.)
     """
     try:
-        from sklearn.ensemble import (
-            GradientBoostingClassifier,
-            GradientBoostingRegressor,
-        )
+        from sklearn.ensemble import GradientBoostingRegressor
     except ImportError:
         notes.append(
             "scikit-learn unavailable; falling back to OLS-coefficient "
@@ -322,17 +321,6 @@ def _attribute_multiply_robust(
         warnings.simplefilter("ignore")
         outcome.fit(feat, y)
 
-    # Propensity: P(period=1 | X). Used only when both periods carry
-    # signal — degenerate propensities are clipped.
-    prop_model = GradientBoostingClassifier(
-        n_estimators=80, max_depth=3, random_state=0
-    )
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        prop_model.fit(X, p)
-    propensity_full = prop_model.predict_proba(X)[:, 1]
-    propensity_full = np.clip(propensity_full, 0.01, 0.99)
-
     contributions: dict[str, float] = {}
     ses: dict[str, float | None] = {}
 
@@ -344,9 +332,7 @@ def _attribute_multiply_robust(
     n_b = len(before_X)
     n_a = len(after_X)
 
-    # Baseline: predict using the *before* covariates with period=1
-    # versus period=0. The DR correction lifts us off of model-only
-    # plug-in to a (consistent) target-functional estimate.
+    # Baseline: predict using the *before* covariates with period=0.
     base_before = np.column_stack([before_X, np.zeros(n_b)])
     pred_y_before = outcome.predict(base_before)
 
@@ -375,34 +361,17 @@ def _attribute_multiply_robust(
         pred_cf = outcome.predict(np.column_stack([cf, np.zeros(n_b)]))
         delta = float(pred_cf.mean() - pred_y_before.mean())
 
-        # DR correction: IPW residual term scaled by per-row propensity.
-        # The correction is averaged over the after-period rows where
-        # period=1 (so only after-period propensity errors matter).
-        prop_after = prop_model.predict_proba(after_X)[:, 1]
-        prop_after = np.clip(prop_after, 0.01, 0.99)
-        ipw_term = (
-            (df_after[target].to_numpy(dtype=float) - pred_y_after_full)
-            / prop_after
-        ).mean()
-        # Scale the IPW residual by the j-th column's share of the
-        # outcome-model gradient. Approximated via permutation drop.
-        perm = before_X.copy()
-        perm[:, j] = rng.permutation(perm[:, j])
-        pred_perm = outcome.predict(
-            np.column_stack([perm, np.zeros(n_b)])
-        )
-        importance = abs(pred_y_before.mean() - pred_perm.mean()) + 1e-9
-        raw_shares[col] = delta + 0.0 * ipw_term  # see note below
-        # IPW correction is currently folded into the residual bucket;
-        # adding it per-node here would double-count given how shares are
-        # rescaled to the observed total change below. Importances are
-        # retained for SE estimation only.
+        # Plug-in outcome-model decomposition: each node's contribution is
+        # the ceteris-paribus prediction shift from swapping X_j to its
+        # after-period draws. Shares are rescaled to the observed total
+        # change below, with any model/observed gap landing in the
+        # residual ("everything_else") bucket.
+        raw_shares[col] = delta
         ses[col] = float(0.5 * abs(delta) / np.sqrt(max(n_b + n_a, 2)))
-        del importance  # not used downstream
 
     # Rescale shares so they sum to the observed target change. This
     # keeps the report honest (residual goes to "everything_else") while
-    # preserving the *relative* DR attribution direction & magnitude.
+    # preserving the *relative* attribution direction & magnitude.
     raw_sum = sum(raw_shares.values())
     observed_change = float(df_after[target].mean() - df_before[target].mean())
     if abs(raw_sum) > 1e-12:

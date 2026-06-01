@@ -20,19 +20,11 @@ each variable.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Any, Iterable
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from causalrag.core.roles import VariableRole, VariableSpec
-
-
-@dataclass(frozen=True)
-class _SourceVote:
-    source: str  # "investigator" | "expert_brief" | "markov_boundary"
-    in_adjustment_set: bool
-    rationale: str | None = None
 
 
 class DAGConflict(BaseModel):

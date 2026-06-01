@@ -94,7 +94,7 @@ class MlxLmAdapter:
                 "validation. Return ONLY a corrected JSON object — no prose, "
                 "no markdown fences.\n\n"
                 f"PREVIOUS RESPONSE:\n{last_raw}\n\n"
-                f"VALIDATION ERRORS:\n{json.dumps(errs, indent=2)}"
+                f"VALIDATION ERRORS:\n{json.dumps(errs, indent=2, default=str)}"
             )
             last_raw = self._runner.generate(prompt=corrective, **opts)
             parsed, errs = _try_parse(last_raw, schema)

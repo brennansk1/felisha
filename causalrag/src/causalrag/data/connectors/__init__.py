@@ -75,7 +75,12 @@ def from_uri(source: str | Path) -> Connector:
         if "#table=" in s:
             url, table = s.rsplit("#table=", 1)
             return SQLConnector(url=url, table=table)
-        return SQLConnector(url=s, query="SELECT 1")  # caller should pass real query
+        raise ValueError(
+            f"SQL URL {s!r} has no table specified. Append a "
+            f"'#table=<name>' fragment (e.g. {s}#table=my_table) or "
+            "construct SQLConnector(url=..., query=...) directly with an "
+            "explicit query."
+        )
 
     # DuckDB explicit schemes
     if s.startswith("duckdb://"):
