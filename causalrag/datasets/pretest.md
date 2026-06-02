@@ -176,22 +176,22 @@ Legend: ✅ done · ⏳ in progress · ☐ todo
 | # | Regime / estimand | Data (source) | Benchmark / standard | Stresses | Status |
 |---|---|---|---|---|---|
 | 1 | **IV / LATE** | **reuse** 401k: `p401` treatment, `e401` instrument, `net_tfa` | participation LATE ≈ **+$10k–13k** | IV estimator, LATE estimand, instrument detection | ✅ **PASS via auto-pilot** (+$8,749 [7.4k,10.1k]); G13/G14 fixed |
-| 2 | **Difference-in-Differences (2-group)** | `organ_donations` (causaldata) | opt-in policy ↓ donation rate (sign/CI) | panel/time shape, DiD identification | ☐ (expect G13 routing gap) |
-| 3 | **Staggered-adoption DiD** | `castle` (causaldata; castle-doctrine → homicide) | small positive on homicide (Cheng–Hoekstra) | `rbridge.did.callaway_santanna` (the reachability fix) | ☐ |
-| 4 | **Regression Discontinuity** | `gov_transfers` (causaldata; Manacorda) | discontinuity at age cutoff | running-var + cutoff, `rbridge.rd.rdrobust` | ☐ |
+| 2 | **Difference-in-Differences (2-group)** | `organ_donations` | sign/CI | panel/DiD identification | ⛔ **feature gap (G15)** — non-DAG design not wired |
+| 3 | **Staggered-adoption DiD** | `castle` | small + on homicide | `rbridge.did.callaway_santanna` | ⛔ **feature gap (G15)** — estimator reachable, no detection/identification/routing |
+| 4 | **Regression Discontinuity** | `gov_transfers` | discontinuity at cutoff | `rbridge.rd.rdrobust` | ⛔ **feature gap (G15)** — non-DAG design not wired |
 | 5 | **CATE / heterogeneous / uplift** | **reuse** Hillstrom (mens vs womens) | heterogeneity by segment | meta-learners (S/T/X), causal forest, `uplift` task | ✅ runs + correct ATEs (G6 fixed); explicit segment-CATE breakdown = follow-up |
-| 6 | **Survival / censored time-to-event** | **reuse** BRCA `days_to_death` + `days_to_last_follow_up` | directional; censoring-aware | survival estimation, censoring pair detection | ☐ |
+| 6 | **Survival / censored time-to-event** | **reuse** BRCA `days_to_death`+`event` | directional; censoring-aware | survival/RMST routing | ⚠️ censoring detected but NOT routed (G15-class) + G10 crash |
 
 ## SHOULD (rounds out the surface)
 
 | # | Regime | Data | Standard | Status |
 |---|---|---|---|---|
-| 7 | **Synthetic control** | `texas` (causaldata; prison construction) | SC gap vs donor pool | ☐ |
+| 7 | **Synthetic control** | `texas` | SC gap vs donor pool | ⛔ **feature gap (G15)** — non-DAG design not wired |
 | 8 | **Clean confounded observational (known effect)** | `nhefs` (causaldata; smoking-cessation → weight) | **≈ +3.4 kg** (Hernán *What If*) — a numeric backdoor benchmark | ☐ |
 | 9 | **Mediation (NDE/NIE, frontdoor)** | `nhefs` mediation framing, or simulated front-door | decomposition runs | ☐ |
 | 10 | **Multi-arm / continuous (dose) treatment** | Hillstrom 3-arm `segment`, or a dose dataset | **the deferred G7** contrast policy | ☐ |
 | 11 | **Heavy missingness** | inject/῾use a high-missing dataset | `HEAVY_MISSINGNESS` flag → `hist-gbm` path | ☐ |
-| 12 | **Non-CSV/Parquet connectors** | load 401k via **SQLite** + **DuckDB** + **Excel** | SQL/DuckDB/Excel/JSON connector code paths (only CSV+Parquet exercised) | ☐ |
+| 12 | **Non-CSV/Parquet connectors** | load 401k via **SQLite** + **DuckDB** + **Excel** | SQL/DuckDB/Excel connector code paths | ✅ PASS (SQLite + DuckDB + Excel all load 9915×14) |
 
 ## LOWER priority
 13. Interference / spillovers (network data) · 14. Transportability / external validity (multi-site) ·

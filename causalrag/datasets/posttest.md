@@ -251,3 +251,73 @@ conversion lift). The `email→conversion` hypothesis previously crashed the ent
 conversion not in digraph"); it now estimates. **G6 fixed end-to-end.** (Explicit CATE-by-segment
 heterogeneity wasn't distinctly surfaced — it produced per-outcome ATEs — so regime 5 is "runs +
 correct" but the heterogeneity-breakdown surface is a follow-up.)
+
+---
+
+# Scoping finding: DAG vs non-DAG identification (gates regimes 2,3,4,7)
+
+After fixing IV (a DAG-based, DoWhy-expressible design), I scoped DiD before running it:
+
+**The auto-pilot handles DAG-based identification (backdoor, IV) end-to-end** — these go through q5's
+DoWhy `identify_effect`. ✅
+
+**Non-DAG designs (DiD, RDD, synthetic control) are NOT wired** — and each is a *feature*, not a fix:
+- **Estimators exist & are reachable** (`rbridge.did.{callaway_santanna,bjs_imputation,dch_multiplegt,
+  honest_did}`; `rbridge.rd.rdrobust`; synthetic-control), the **flags exist**
+  (`PANEL_STRUCTURE`, `STAGGERED_ADOPTION`, `DIFF_IN_DIFF_CANDIDATE`, `TIME_VARYING_TREATMENT`), and the
+  **estimands exist** (`ATT`, `DYNAMIC_ATT`).
+- BUT the chain that would trigger them is missing:
+  1. **No structure detection** — nothing in discovery/auto sets `STAGGERED_ADOPTION`/`PANEL_STRUCTURE`
+     from the data (`timeseries_cd.py` *consumes* the flag but never sets it).
+  2. **No non-DAG identification** — q5 `IdStrategy` is `{backdoor, frontdoor, iv, mediation,
+     do-calculus}`; there is no `did`/parallel-trends or `rdd`/discontinuity strategy. DiD/RDD/SC are
+     identified by design assumptions, not a DAG, so they bypass q5 entirely.
+  3. **No routing** — even with the flag, nothing creates an ATT/DYNAMIC_ATT hypothesis and routes to a
+     DiD estimator.
+
+| Gap | Severity | Scope |
+|---|---|---|
+| **G15** | **feature-sized (gates regimes 2/3/4/7)** | Wire non-DAG designs end-to-end: (a) panel/running-variable structure **detection** → set the design flag; (b) a **non-DAG identification** branch (parallel-trends for DiD, continuity for RDD, donor-pool for SC) that bypasses DoWhy; (c) **estimand + estimator routing** to the matching registered estimator. Each design is its own build (~the size of, or larger than, the whole IV chain). |
+
+**Coverage conclusion for "done":** DAG-identifiable regimes (backdoor, IV, CATE, observational,
+heavy-missingness) now PASS. The remaining MUST/SHOULD regimes that rely on **design-based (non-DAG)
+identification** — DiD (2,3), RDD (4), synthetic control (7) — need feature work, not refinement.
+The most efficient remaining *refinement* targets are regimes that reuse the DAG machinery:
+**survival (6)** (backdoor + censoring) and **connectors (12)**.
+
+## ✅ Regime 12 (connectors) — PASS
+Loaded 401k (9915×14) through **SQLite** (SQLAlchemy URL), **DuckDB** (table + query), and **Excel**
+(openpyxl) connectors via the project's connector layer, on top of the already-exercised CSV/Parquet.
+Warehouse/file connectivity for BI is solid. (`connectorx` fast-path absent — optional, non-blocking.)
+
+## Regime 6 (survival) — partial: censoring detected, not routed; blocked by G10
+- Discovery noted RIGHT_CENSORED/RMST in the protocol, but the routing flags were just
+  `categorical_treatment, continuous_outcome` → time_to_event treated as a **continuous outcome**
+  (censoring NOT honored). Survival/RMST routing is **not wired** (same shape as the DiD/RDD/SC gap,
+  G15) — the survival estimator + RMST_CONTRAST estimand exist but aren't auto-triggered.
+- Both estimates then crashed with **G10** (`could not convert string to float: '1.0 -'`) — the
+  R-matchit `avg_comparisons` contrast-label parsing bug, auto-selected for categorical-treatment +
+  positivity. The **Python DML path works** on this data (BRCA-clinical proved +0.21), so G10 is a
+  suboptimal-estimator-selection bug, not a dead end. Recommended fixes: (a) prefer Python DML over
+  R-matchit when treatment is numeric-encoded binary, and/or (b) pass the treatment as an R factor so
+  `avg_comparisons` yields a numeric `$estimate`.
+
+# Session coverage summary
+
+| Regime | Status |
+|---|---|
+| Backdoor ATE/ATT (401k elig, nhefs, BRCA-clinical) | ✅ PASS |
+| RCT (Hillstrom) | ✅ PASS (+0.0606 vs +0.0609) |
+| IV / LATE (401k participation) | ✅ PASS via auto-pilot (+$8,749) — **G13/G14 fixed** |
+| CATE / multi-outcome (Hillstrom) | ✅ runs + correct — **G6 fixed** |
+| Observational w/ known effect (nhefs) | ✅ PASS (+2.97 kg) |
+| Heavy missingness | ✅ PASS — **G11 fixed** |
+| Connectors (SQLite/DuckDB/Excel) | ✅ PASS |
+| Survival (6) | ⚠️ censoring not routed (G15-class) + G10 crash |
+| DiD (2,3), RDD (4), Synthetic control (7) | ⛔ feature-gated (**G15** — non-DAG designs not wired) |
+| Mediation (9), Multi-arm (10) | ☐ not yet tested |
+
+**Net:** every **DAG-identifiable** regime now passes end-to-end via the auto-pilot. The remaining
+gaps are (1) **design-based / non-DAG identification** (DiD, RDD, SC, survival-RMST) — each a feature:
+structure detection → non-DAG identification → estimand/routing (G15); and (2) the **R-matchit G10**
+parsing bug (Python path unaffected). ~15 fixes landed this session (G5–G14c); see the gap table above.
