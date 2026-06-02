@@ -103,6 +103,15 @@ def identify_effect(
             notes=[f"Estimand class {estimand.klass.value} is not supported by Step 5 yet."],
         )
 
+    # G6 fix: the hypothesizer routinely proposes a (treatment, outcome) whose
+    # outcome (or treatment) is not a node in the discovery DAG — DoWhy then
+    # raises NetworkXError and the hypothesis is wrongly dropped as
+    # "non-identifiable". Augment the graph so the estimand's nodes always exist,
+    # wiring a default backdoor structure (treatment → outcome and each treatment
+    # confounder → outcome). The outcome is caused by the treatment + confounders
+    # by assumption, so this is the correct default rather than a silent skip.
+    graph = _ensure_estimand_nodes(graph, estimand)
+
     needed = _required_columns(estimand, graph)
     if df is None:
         df = pd.DataFrame({c: [0.0] for c in needed})
@@ -190,6 +199,85 @@ def identify_effect(
 # --- Helpers -----------------------------------------------------------------
 
 
+def _ensure_estimand_nodes(graph: CausalGraph, estimand: CausalEstimand) -> CausalGraph:
+    """Return a graph guaranteed to contain the estimand's treatment, outcome,
+    and modifiers as nodes (G6 fix).
+
+    When a proposed node is absent from the discovery DAG, add it with a default
+    backdoor structure: ``treatment → outcome`` plus ``confounder → outcome`` for
+    each parent of the treatment (or, if the treatment is also new, for every
+    existing non-target node). Auto-added edges are tagged in their ``note`` for
+    provenance. Leaves the graph untouched when all estimand nodes already exist.
+    """
+    from causalrag.core.graph import CausalEdge
+
+    targets = (estimand.treatment, estimand.outcome, *estimand.modifiers)
+    if estimand.instrument:
+        targets = (*targets, estimand.instrument)
+    existing = set(graph.nodes)
+    missing = {t for t in targets if t and t not in existing}
+    # Also re-wire when the instrument exists but lacks a valid IV structure.
+    iv_needs_wiring = bool(estimand.instrument) and not _has_valid_instrument_edges(graph, estimand)
+    if not missing and not iv_needs_wiring:
+        return graph
+
+    nodes = list(graph.nodes) + [t for t in targets if t and t not in existing]
+    edges = list(graph.edges)
+    pairs = {(e.source, e.target) for e in edges} | {(e.target, e.source) for e in edges}
+    roles = dict(graph.roles)
+
+    t, y = estimand.treatment, estimand.outcome
+    confounders = (
+        list(graph.parents(t)) if t in existing else [n for n in graph.nodes if n not in targets]
+    )
+
+    def _add_edge(src: str, dst: str) -> None:
+        if src and dst and src != dst and (src, dst) not in pairs:
+            edges.append(
+                CausalEdge(source=src, target=dst, llm_proposed=False,
+                           note="auto-added (G6): estimand node absent from discovery DAG")
+            )
+            pairs.add((src, dst))
+            pairs.add((dst, src))
+
+    if y in missing:
+        roles.setdefault(y, VariableRole.OUTCOME)
+        _add_edge(t, y)
+        for c in confounders:
+            _add_edge(c, y)
+    if t in missing:
+        roles.setdefault(t, VariableRole.TREATMENT)
+        for c in confounders:
+            _add_edge(c, t)
+        _add_edge(t, y)
+    for m in estimand.modifiers:
+        if m in missing:
+            roles.setdefault(m, VariableRole.EFFECT_MODIFIER)
+            _add_edge(m, y)
+
+    # Instrument: wire Z → treatment and guarantee NO Z → outcome direct edge
+    # (exclusion restriction), so DoWhy recognises a valid IV. (G13)
+    z = estimand.instrument
+    if z:
+        roles[z] = VariableRole.INSTRUMENT
+        # drop any direct instrument→outcome edge that would break exclusion
+        edges = [e for e in edges if not (e.source == z and e.target == y)]
+        pairs = {(e.source, e.target) for e in edges} | {(e.target, e.source) for e in edges}
+        _add_edge(z, t)
+
+    return CausalGraph(nodes=tuple(nodes), edges=tuple(edges), roles=roles, rank=graph.rank)
+
+
+def _has_valid_instrument_edges(graph: CausalGraph, estimand: CausalEstimand) -> bool:
+    """True iff the instrument points to the treatment and NOT directly to the
+    outcome (the minimal IV structure DoWhy needs)."""
+    z, t, y = estimand.instrument, estimand.treatment, estimand.outcome
+    if not z or z not in graph.nodes:
+        return False
+    edge_pairs = {(e.source, e.target) for e in graph.edges}
+    return (z, t) in edge_pairs and (z, y) not in edge_pairs
+
+
 def _required_columns(estimand: CausalEstimand, graph: CausalGraph) -> tuple[str, ...]:
     needed = {estimand.treatment, estimand.outcome, *estimand.modifiers}
     if estimand.mediator:
@@ -226,10 +314,19 @@ def _interpret(
     lists. We probe defensively.
     """
     estimands = getattr(identified, "estimands", {}) or {}
+    iv_available = bool(estimands.get("iv") and getattr(identified, "instrumental_variables", None))
+    # G13: when the requested estimand is LATE and a valid instrument exists,
+    # PREFER the IV identification over backdoor. DoWhy commonly offers both;
+    # the old code returned backdoor unconditionally (checked first), so an
+    # IV/LATE request silently collapsed to a confounded backdoor estimate on a
+    # self-selected treatment. Backdoor remains the default for ATE/ATT.
+    if estimand.klass == EstimandClass.LATE and iv_available:
+        iv = _flatten(identified.instrumental_variables)
+        return "iv", (), (iv[0] if iv else None), None
     if estimands.get("backdoor") and getattr(identified, "backdoor_variables", None):
         adj = _flatten(identified.backdoor_variables)
         return "backdoor", tuple(sorted(set(adj))), None, None
-    if estimands.get("iv") and getattr(identified, "instrumental_variables", None):
+    if iv_available:
         iv = _flatten(identified.instrumental_variables)
         return "iv", (), (iv[0] if iv else None), None
     if estimands.get("frontdoor") and getattr(identified, "frontdoor_variables", None):

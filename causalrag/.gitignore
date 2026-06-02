@@ -29,3 +29,9 @@ env/
 .causalrag/hardware.json
 .causalrag/env.lock
 reports/
+
+# Local integration-test datasets (data payloads only; manifests are tracked)
+datasets/**/*.csv
+datasets/**/*.parquet
+datasets/**/*.tsv
+datasets/**/*.dta

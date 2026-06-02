@@ -99,8 +99,18 @@ def run_feasibility(
             sd_cache[col] = float(df[col].std(ddof=1) or 1.0)
         return sd_cache[col]
 
+    import pandas.api.types as _pdt
+
     for treatment, outcome in pairs:
         if treatment not in df.columns or outcome not in df.columns:
+            continue
+        # A non-numeric (string/categorical) treatment cannot be fed to the
+        # numeric power calculations — the continuous path would cast the labels
+        # to float and raise ``ValueError: could not convert string to float``
+        # (G7). Binary string treatments should be 0/1-encoded upstream; a
+        # >2-level categorical treatment needs an explicit contrast (which arm
+        # vs which) that power analysis cannot infer. Skip rather than crash.
+        if not _pdt.is_numeric_dtype(df[treatment]):
             continue
         t_unique = _t_unique(treatment)
         # Default plausible band — for continuous outcome we resolve a small

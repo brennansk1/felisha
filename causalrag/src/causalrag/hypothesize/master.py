@@ -183,6 +183,12 @@ def run_master_hypothesize(
             )
         )
         master_records.append(mh)
+
+    # G13: ensure an IV/LATE hypothesis exists when discovery named an instrument
+    # (shared with the auto proposer; the LLM often won't request LATE itself).
+    from causalrag.hypothesize.automated import maybe_inject_iv_hypothesis
+
+    hypotheses = maybe_inject_iv_hypothesis(protocol, hypotheses)
     return hypotheses, master_records
 
 

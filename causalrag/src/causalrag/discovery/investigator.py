@@ -116,7 +116,15 @@ _SYSTEM_PROMPT = (
 
 def _profile_summary_for_prompt(profile: DatasetProfile, max_top: int = 5) -> str:
     lines = [f"# Dataset profile: {profile.n_rows} rows × {profile.n_cols} columns"]
+    omitted = 0
     for c in profile.columns:
+        # Skip non-analytic columns (constant or essentially all-empty) from the
+        # per-column enumeration. This keeps the model's JSON output bounded on
+        # wide datasets — the dominant cause of truncated/invalid discovery JSON
+        # (G9). Omitted columns are padded as 'unknown' by the completeness check.
+        if c.constant or c.missing_rate >= 0.99:
+            omitted += 1
+            continue
         bits = [
             f"- {c.name}: dtype={c.dtype}, logical={c.logical_dtype}, "
             f"missing={c.missing_rate:.0%}, unique={c.cardinality}"
@@ -135,6 +143,11 @@ def _profile_summary_for_prompt(profile: DatasetProfile, max_top: int = 5) -> st
         if c.suspected_event_indicator:
             bits.append("  HINT: suspected event indicator (binary)")
         lines.append("\n".join(bits))
+    if omitted:
+        lines.append(
+            f"# ({omitted} constant / all-empty columns omitted as non-analytic; "
+            "they need no classification.)"
+        )
     if profile.censoring_pairs:
         lines.append("# Suspected censoring pairs (time, event):")
         for t, e in profile.censoring_pairs:
@@ -204,6 +217,12 @@ def run_investigator(
         schema=InvestigatorReport,
         system=with_honesty(_SYSTEM_PROMPT),
         json_schema=InvestigatorReport.model_json_schema(),
+        # Discovery emits one JSON entry per column; on wide datasets the
+        # default 8192 ctx / 4096 output truncates the JSON → schema-validation
+        # failure (G9). Give the input + output room to fit a moderately wide
+        # profile. (Very wide >~150-col datasets still need the batched-classify
+        # redesign — see G9.)
+        extra_options={"num_ctx": 16384, "num_predict": 8192},
     )
     report = response.parsed
     assert isinstance(report, InvestigatorReport)

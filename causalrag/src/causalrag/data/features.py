@@ -183,6 +183,14 @@ def auto_preprocess(
         )
         manifest.new_columns_from.setdefault(col, []).extend(derived)
 
+    # 4a-guard. One-hot expansion can produce a dummy whose name collides with
+    # an existing column (e.g. a pre-existing ``foo_Yes`` plus a ``foo``→onehot
+    # ``foo_Yes``), yielding duplicate column labels. Duplicate labels make
+    # ``work[col]`` return a DataFrame and break the scalar column access below
+    # (and every estimator's ``df[col]``). Keep the first occurrence of each name.
+    if work.columns.duplicated().any():
+        work = work.loc[:, ~work.columns.duplicated()]
+
     # 4b. Drop high-cardinality categoricals that exceed max_onehot_card.
     # Leaving them in would crash estimators that .astype(float) the covariate
     # matrix (LinearDML). The analyst can re-introduce them via target encoding
@@ -203,6 +211,39 @@ def auto_preprocess(
             )
         )
         work.drop(columns=[col], inplace=True)
+
+    # 4c. Binary-encode a non-numeric treatment / outcome to 0/1.
+    # These columns are kept verbatim above (an estimator expects a SINGLE
+    # treatment/outcome column, so one-hot is wrong for them), but a string /
+    # categorical binary (Yes/No, Alive/Dead, …) must still be numeric or the
+    # downstream ``.astype(float64)`` in every estimator raises
+    # ``could not convert string to float`` (G7). A >2-level treatment is left
+    # untouched here — it needs an explicit contrast, not a silent encoding.
+    _MISSING_TOKENS = {"", "na", "nan", "none", "unknown", "not reported", "not available", "n/a", "--"}
+    _POSITIVE_TOKENS = {"yes", "true", "1", "t", "y", "positive", "dead", "deceased", "event", "treated", "case"}
+    for _role, _col in (("treatment", treatment), ("outcome", outcome)):
+        if not _col or _col not in work.columns:
+            continue
+        if pd.api.types.is_numeric_dtype(work[_col]):
+            continue
+        norm = work[_col].astype(str).str.strip().str.lower()
+        norm = norm.where(~norm.isin(_MISSING_TOKENS), other=pd.NA)
+        levels = sorted(norm.dropna().unique())
+        if len(levels) != 2:
+            # Not binary after dropping missing-like tokens — leave it; the
+            # multi-arm / non-binary case is handled (or refused) downstream
+            # rather than silently collapsed.
+            continue
+        positive = next((lv for lv in levels if lv in _POSITIVE_TOKENS), levels[1])
+        mapping = {lv: (1 if lv == positive else 0) for lv in levels}
+        work[_col] = norm.map(mapping).astype("float64")
+        manifest.transforms.append(
+            TransformRecord(
+                column=_col,
+                kind="binary_encode",
+                details={"role": _role, "mapping": mapping, "positive_level": positive},
+            )
+        )
 
     # 5. Log-transform skewed continuous (outcome too, but flagged separately)
     for col in list(work.columns):

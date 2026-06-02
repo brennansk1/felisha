@@ -57,6 +57,14 @@ def estimate(
         )
 
     adj = confounders if confounders is not None else identification.adjustment_set
+    # G14c: IV identification yields an EMPTY backdoor adjustment set (correct —
+    # IV doesn't adjust), but IV forests (grf instrumental_forest) still require a
+    # non-empty covariate matrix X for their local moment conditions; an empty X
+    # fails R's validate_X. Supply the pre-treatment covariates (every column
+    # except treatment/outcome/instrument) when IV left the adjustment set empty.
+    if identification.strategy == "iv" and not adj and estimand.instrument:
+        _exclude = {estimand.treatment, estimand.outcome, estimand.instrument}
+        adj = tuple(c for c in df.columns if c not in _exclude)
     mods = modifiers or estimand.modifiers
     situation_flags = set(flags or set())
 
@@ -116,6 +124,36 @@ def estimate(
         selection_dict = sel.to_dict()
         adj_used = sel.selected
 
+    # Guard against missingness-induced sample collapse (heavy-missingness
+    # regime). A confounder that is mostly missing cannot be reliably
+    # conditioned on, and listwise deletion on it silently shrinks the sample
+    # (and conditions on completeness → selection bias). Iteratively drop the
+    # highest-missingness adjustment columns until the complete-case count
+    # recovers to a usable target. Record what was pruned and why.
+    if adj_used:
+        def _complete_cases(cols: tuple[str, ...]) -> int:
+            keep = [c for c in (estimand.treatment, estimand.outcome, *cols) if c in df_used.columns]
+            return int(df_used[keep].dropna().shape[0])
+
+        target = max(100, int(0.5 * len(df_used)))
+        adj_list = list(adj_used)
+        dropped_high_missing: list[tuple[str, float]] = []
+        while adj_list and _complete_cases(tuple(adj_list)) < target:
+            worst = max(
+                adj_list,
+                key=lambda c: float(df_used[c].isna().mean()) if c in df_used.columns else 0.0,
+            )
+            worst_rate = float(df_used[worst].isna().mean()) if worst in df_used.columns else 0.0
+            if worst_rate <= 0.0:
+                break  # remaining collapse is structural, not missingness — stop
+            adj_list.remove(worst)
+            dropped_high_missing.append((worst, round(worst_rate, 3)))
+        if dropped_high_missing:
+            adj_used = tuple(adj_list)
+            selection_dict = dict(selection_dict or {})
+            selection_dict["dropped_high_missing"] = dropped_high_missing
+            selection_dict["complete_cases_after_prune"] = _complete_cases(adj_used)
+
     # Pre-flight positivity / overlap diagnostic. If propensity tails are
     # extreme we add POSITIVITY_VIOLATION to the situation, which routes the
     # selector toward doubly-robust methods or away from pure IPW.
@@ -138,12 +176,24 @@ def estimate(
     )
 
     Factory = entry.factory
-    estimator = Factory(
-        treatment=estimand.treatment,
-        outcome=estimand.outcome,
-        confounders=tuple(adj_used),
-        modifiers=tuple(mods_used),
-    )
+    # G14: pass estimator-specific roles (instrument for IV estimators, mediator
+    # for mediation estimators) only when the factory's signature accepts them.
+    # The generic call previously omitted `instrument`, so IV estimators like
+    # GRFInstrumentalForest raised "missing required argument: 'instrument'".
+    import inspect
+
+    factory_params = inspect.signature(Factory).parameters
+    factory_kwargs: dict[str, Any] = {
+        "treatment": estimand.treatment,
+        "outcome": estimand.outcome,
+        "confounders": tuple(adj_used),
+        "modifiers": tuple(mods_used),
+    }
+    if "instrument" in factory_params and estimand.instrument:
+        factory_kwargs["instrument"] = estimand.instrument
+    if "mediator" in factory_params and estimand.mediator:
+        factory_kwargs["mediator"] = estimand.mediator
+    estimator = Factory(**factory_kwargs)
     estimator.fit(df_used, protocol)
     result = estimator.estimate()
 

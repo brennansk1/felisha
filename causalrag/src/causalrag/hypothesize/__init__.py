@@ -4,6 +4,7 @@ from causalrag.hypothesize.automated import (
     HypothesisProposal,
     HypothesisQueue,
     deterministic_proposals,
+    maybe_inject_iv_hypothesis,
     proposals_to_hypotheses,
     run_automated,
 )
@@ -15,6 +16,7 @@ __all__ = [
     "HypothesisQueue",
     "deterministic_proposals",
     "from_pairs",
+    "maybe_inject_iv_hypothesis",
     "pin",
     "proposals_to_hypotheses",
     "rank_by_impact",

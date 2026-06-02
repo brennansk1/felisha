@@ -191,7 +191,28 @@ def _categorical_stats(series: pd.Series) -> dict[str, Any]:
 def _profile_column(name: str, series: pd.Series) -> ColumnProfile:
     n_total = len(series)
     n_missing = int(series.isna().sum())
-    cardinality = int(series.nunique(dropna=True))
+    try:
+        cardinality = int(series.nunique(dropna=True))
+    except TypeError:
+        # Column holds unhashable cell values (numpy arrays / lists / dicts —
+        # e.g. a nested ``treatments`` column from a clinical export). No
+        # estimator can consume it; profile it as an identifier-like column so
+        # ``auto_preprocess`` drops it rather than crashing on nunique/float
+        # casts downstream (G8).
+        return ColumnProfile(
+            name=name,
+            dtype=str(series.dtype),
+            logical_dtype="identifier",
+            n_total=n_total,
+            n_missing=n_missing,
+            missing_rate=round(n_missing / max(n_total, 1), 4),
+            cardinality=n_total,
+            suspected_identifier=True,
+            suspected_event_indicator=False,
+            suspected_time_column=False,
+            is_binary_01=False,
+            constant=False,
+        )
     logical = _infer_logical_dtype(series, name)
 
     cont = _continuous_stats(series) if logical in {"continuous", "count", "ordinal"} else {}

@@ -226,10 +226,79 @@ def proposals_to_hypotheses(
     return out
 
 
+def maybe_inject_iv_hypothesis(
+    protocol: StudyProtocol,
+    hypotheses: list[Hypothesis],
+    *,
+    treatment: str | None = None,
+    outcome: str | None = None,
+) -> list[Hypothesis]:
+    """Append a deterministic IV/LATE hypothesis when discovery tagged a column
+    as an instrument and no LATE hypothesis is present (G13).
+
+    The discovery model frequently fails to request LATE on its own, so the IV
+    path would never run — and a backdoor estimate on a self-selected treatment
+    is biased (e.g. 401(k) participation: backdoor ≈ +$17–19k vs IV LATE ≈ +$11k).
+    Anchored on the explicit ``(treatment, outcome)`` when provided (e.g. the
+    user-pinned pair), otherwise the top-ranked hypothesis. Returns the list
+    unchanged when there is no instrument or a LATE hypothesis already exists.
+    """
+    discovery = getattr(protocol, "discovery", None)
+    if not hypotheses or discovery is None:
+        return hypotheses
+    cols = getattr(discovery, "columns", ())
+    valid = {c.name for c in cols}
+    instruments = [
+        c.name
+        for c in cols
+        if str(getattr(c, "role", "") or "").lower().endswith("instrument") and c.name in valid
+    ]
+    if not instruments:
+        return hypotheses
+    if any(h.estimand is not None and h.estimand.klass == EstimandClass.LATE for h in hypotheses):
+        return hypotheses
+    # Anchor on the pinned (treatment, outcome) when given; else the top hypothesis.
+    top = hypotheses[0]
+    anchor_t = treatment or top.treatment
+    anchor_y = outcome or top.outcome
+    counterfactual = next(
+        (h.counterfactual for h in hypotheses if h.treatment == anchor_t and h.outcome == anchor_y),
+        top.counterfactual,
+    )
+    z = next((i for i in instruments if i not in (anchor_t, anchor_y)), None)
+    if z is None:
+        return hypotheses
+    iv_est = CausalEstimand.model_validate(
+        {
+            "class": EstimandClass.LATE,
+            "treatment": anchor_t,
+            "outcome": anchor_y,
+            "instrument": z,
+            "formal_expression": "Local ATE among compliers (Wald)",
+        }
+    )
+    hypotheses.append(
+        Hypothesis(
+            id=f"auto-iv-{z}",
+            treatment=anchor_t,
+            outcome=anchor_y,
+            counterfactual=counterfactual,
+            rationale=(
+                f"[auto-IV] Discovery tagged '{z}' as an instrument; estimating the LATE via IV. "
+                f"Complements the backdoor estimate, which is biased under treatment self-selection."
+            ),
+            impact_score=top.impact_score,
+            estimand=iv_est,
+        )
+    )
+    return hypotheses
+
+
 __all__ = [
     "HypothesisProposal",
     "HypothesisQueue",
     "deterministic_proposals",
+    "maybe_inject_iv_hypothesis",
     "proposals_to_hypotheses",
     "run_automated",
 ]

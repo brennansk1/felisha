@@ -51,43 +51,51 @@ class ModelSlots:
 # Below T2, no genuine reasoning model fits in VRAM. We still split slots so
 # downstream code reads correct slot names; we issue a warning at run_doctor
 # time so the user knows hypothesis quality will be degraded.
+# Refreshed to the Qwen3.5 generation (released Feb 2026; Apache-2.0). Qwen3.5
+# is a unified model with a built-in *thinking* mode, so the same tag fills both
+# the discovery slot (no-think, fast JSON) and the hypothesize slot (thinking) —
+# no separate "reasoning" model download is needed. Tags are real Ollama tags
+# (``qwen3.5:<size>``). Sizes are chosen so each tier fits the corresponding
+# ``hardware.py`` effective-VRAM floor without OOM: 9b (~6.6 GB) is the safe
+# pick through tier 2 (which spans ~12–24 GB effective, incl. 24 GB Apple
+# unified ≈ 19 GB usable); 27b (~17 GB) only from tier 3 (≥24 GB) up.
 _TIER_TABLE: dict[int, ModelSlots] = {
     0: ModelSlots(
-        discovery="qwen3:4b-q4_K_M",          # general, instruction-tuned, fast
-        hypothesize="qwen3:8b-q4_K_M",        # best available "deep" model at this tier
-        utility="qwen3:1.7b-q4_K_M",          # tiny — JSON repair only
+        discovery="qwen3.5:4b",               # general, instruction-tuned, fast
+        hypothesize="qwen3.5:4b",             # thinking mode; best "deep" fit at this tier
+        utility="qwen3.5:2b",                 # tiny — JSON repair only
         tier=0,
     ),
     1: ModelSlots(
-        discovery="qwen3:8b-q4_K_M",          # general
-        hypothesize="qwen3:14b-q4_K_M",       # quantized 14B as cheapest reasoning-grade fit
-        utility="qwen3:4b-q4_K_M",
+        discovery="qwen3.5:9b",               # general
+        hypothesize="qwen3.5:9b",             # thinking mode — genuine reasoning at ~6.6 GB
+        utility="qwen3.5:4b",
         tier=1,
     ),
     2: ModelSlots(
-        discovery="qwen3:14b-q4_K_M",         # FLOOR: general 14B
-        hypothesize="deepseek-r1:14b-q4_K_M", # FLOOR: reasoning model
-        utility="qwen3:4b-q4_K_M",
+        discovery="qwen3.5:9b",               # FLOOR: safe on 24 GB unified (~19 GB usable)
+        hypothesize="qwen3.5:9b",             # FLOOR: thinking mode
+        utility="qwen3.5:4b",
         tier=2,
     ),
     3: ModelSlots(
-        discovery="qwen3:32b-q4_K_M",
-        hypothesize="deepseek-r1:32b-q5_K_M",
-        utility="qwen3:8b-q4_K_M",
+        discovery="qwen3.5:27b",              # ≥24 GB VRAM — 27b (~17 GB Q4) fits
+        hypothesize="qwen3.5:27b",            # thinking mode
+        utility="qwen3.5:9b",
         tier=3,
         quantization="Q5_K_M",
     ),
     4: ModelSlots(
-        discovery="llama3.3:70b-q4_K_M",
-        hypothesize="deepseek-r1:70b-distill-q4_K_M",
-        utility="qwen3:14b-q4_K_M",
+        discovery="qwen3.5:35b",              # ≥48 GB — 35B MoE
+        hypothesize="qwen3.5:35b",
+        utility="qwen3.5:9b",
         tier=4,
         quantization="Q5_K_M",
     ),
     5: ModelSlots(
-        discovery="llama3.3:70b-q4_K_M",
-        hypothesize="deepseek-r1:70b-distill-q8_0",
-        utility="qwen3:32b-q4_K_M",
+        discovery="qwen3.5:122b",             # ≥80 GB — 122B-A10B MoE
+        hypothesize="qwen3.5:122b",
+        utility="qwen3.5:27b",
         tier=5,
         quantization="Q8_0",
     ),
@@ -124,29 +132,24 @@ def select_slots(profile: HardwareProfile) -> ModelSlots:
 # the installed model name. We prefer reasoning-grade models (deepseek-r1, qwq)
 # for the hypothesize slot and general instruction-tuned models for discovery.
 _DISCOVERY_FALLBACKS: tuple[str, ...] = (
-    "qwen3:14b",
-    "qwen3:8b",
-    "qwen2.5:14b",
-    "llama3.3",
-    "llama3.1:8b",
-    "gemma2:27b",
-    "mistral-small:24b",
+    "qwen3.5:9b",
+    "qwen3.5:27b",
+    "qwen3.5:4b",
+    "qwen3:14b",   # prior-gen 14B, kept locally as the 14B slot
+    "deepseek-r1",
 )
 _HYPOTHESIZE_FALLBACKS: tuple[str, ...] = (
+    "qwen3.5:27b",  # thinking mode
+    "qwen3.5:9b",   # thinking mode
     "deepseek-r1",
     "qwq",
-    "qwen3:14b",  # qwen3 has thinking mode
-    "gemma2:27b",
-    "mistral-small:24b",
-    "qwen2.5:14b",
-    "llama3.3",
-    "llama3.1:8b",
+    "qwen3:14b",    # qwen3 has thinking mode
 )
 _UTILITY_FALLBACKS: tuple[str, ...] = (
-    "qwen3:4b",
-    "qwen3:8b",
-    "llama3.1:8b",
-    "qwen2.5:14b",
+    "qwen3.5:4b",
+    "qwen3.5:2b",
+    "qwen3.5:9b",
+    "qwen3:14b",
 )
 
 

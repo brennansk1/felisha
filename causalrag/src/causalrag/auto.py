@@ -32,6 +32,7 @@ from causalrag.core.roles import VariableRole
 from causalrag.discovery import run_discovery
 from causalrag.feasibility import default_thresholds, run_feasibility
 from causalrag.hypothesize import (
+    maybe_inject_iv_hypothesis,
     proposals_to_hypotheses,
     rank_by_impact,
     run_automated,
@@ -229,6 +230,12 @@ def run_auto(
         counterfactual_ratio=counterfactual_ratio,
     )
     hypotheses = rank_by_impact(proposals_to_hypotheses(proposals))[:max_hypotheses]
+    # G13: ensure the IV/LATE path runs when discovery named an instrument
+    # (the auto proposer otherwise only emits backdoor ATE hypotheses). Anchor on
+    # the pinned (treatment, outcome) when the analyst supplied them.
+    hypotheses = maybe_inject_iv_hypothesis(
+        protocol, hypotheses, treatment=treatment, outcome=outcome
+    )
     protocol.hypothesis_queue = tuple(hypotheses)
     protocol.counterfactual_ratio = counterfactual_ratio
     record_decision(

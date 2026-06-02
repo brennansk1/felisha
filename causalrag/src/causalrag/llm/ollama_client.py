@@ -99,10 +99,20 @@ class HttpxTransport:
                     "stream": False,
                     "format": fmt,
                     "options": options,
+                    # Disable "thinking" mode. Hybrid-reasoning models (Qwen3.5,
+                    # etc.) otherwise stream their chain-of-thought into a separate
+                    # ``thinking`` field and leave ``response`` EMPTY — which silently
+                    # breaks the schema-validated JSON parsing this client relies on.
+                    # Structured output does not benefit from exposed reasoning, and
+                    # the traces are pure latency on memory-bandwidth-bound local GPUs.
+                    "think": False,
                 },
             )
             r.raise_for_status()
-            return str(r.json()["response"])
+            data = r.json()
+            # Prefer the answer field; fall back to ``thinking`` so a model/server that
+            # ignores ``think:false`` never yields a silent empty string.
+            return str(data.get("response") or data.get("thinking") or "")
 
     def show(self, model: str) -> dict[str, Any]:
         with self._client() as client:
