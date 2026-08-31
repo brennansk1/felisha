@@ -204,15 +204,19 @@ and no environment-variable path for credentials.
 
 ### 2.8 The test suite cannot function as a merge gate
 
-Measured in this container: the full `pytest` run exceeded **40 minutes**
-without completing, and `pytest tests/unit` alone — pinned to single-threaded
-BLAS — exceeded **35 minutes** without completing. Neither produced a pass/fail
-count within the time available, so the documented "1165+ unit tests passing"
-could not be independently confirmed here.
+Measured in this container:
 
-Process inspection showed the suite was not hung — it was genuinely computing,
-with joblib `loky` workers alive for 10–18 minutes each at ~40% CPU, fitting
-real causal forests inside the test process.
+- `pytest tests/unit` — **1161 passed, 7 failed, 35 skipped, in 9m 00s.**
+- The full suite (adding `tests/integration` and `tests/synthetic_datasets`)
+  exceeded **40 minutes** without completing. Process inspection confirmed it
+  was computing, not hung — joblib `loky` workers alive 10–18 minutes each at
+  ~40% CPU, fitting real causal forests inside the test process.
+
+So the unit suite is a viable gate at 9 minutes (still 2× too slow, and
+trivially fixable with `pytest-xdist`); the heavy suites are not.
+
+**But the documented "1165+ unit tests passing" is not true today — 7 fail.**
+See §2.11.
 
 - No `pytest-xdist`; the suite is serial.
 - Estimator tests fit real forests at default `n_jobs`, oversubscribing CPU
@@ -253,6 +257,84 @@ local**. There is no adapter for a frontier hosted model. For the reasoning-
 heaviest steps in the pipeline (DAG proposal, domain inference, executive
 synthesis) that is a real ceiling on output quality, and it is the gap most
 directly relevant to being "cutting edge."
+
+### 2.11 The coverage gap is not hypothetical — here is a live instance
+
+The 7 failing unit tests break down into three very different classes.
+
+**Four are missing-dependency guards, not defects** — tests that hard-require
+an optional dep with no `skipif`:
+
+```
+tests/unit/roadmap/test_q7_pin_adjustment_set.py  (×3)
+  RBridgeError: rpy2 not installed
+tests/unit/test_connectors_extended.py::test_duckdb_file_table_roundtrip
+  ModuleNotFoundError: No module named 'duckdb'
+```
+
+Cheap to fix, but note what it means: three tests of a *core Roadmap step*
+(Q7 adjustment-set pinning) can only run on a machine with the R bridge
+installed. On CI as configured — `pip install -e ".[dev]"`, no rpy2 — they
+would fail, not skip.
+
+**One is a stale assertion against a moved model landscape:**
+
+```
+tests/unit/test_hardware.py::test_selector_returns_qwen3_14b_at_tier2
+  assert ('14b' in 'qwen3.5:9b' or '14B' in 'qwen3.5:9b')
+```
+
+The tier map was refreshed to `qwen3.5:9b`; the test still expects a 14B
+model. The "hardware-tier map T0–T5 for the May 2026 model landscape" has
+already rotted, three months on. Any hard-coded model registry needs an
+explicit refresh cadence and tests written against *tier properties*, not
+model names.
+
+**Two are genuine statistical failures — and one is the whole argument of
+this document, reproduced in a single test.**
+
+```
+tests/unit/tasks/test_geolift.py::test_run_geolift_2_se_recovery
+AssertionError: true_abs=12.001 not in [-1.299, 1.991]
+  notes=['pysyncon unavailable; using OLS-on-donors fallback']
+  rmspe_ratio=21.15
+```
+
+Read that carefully. An optional dependency was absent. The pipeline did
+exactly what it was designed to do — degraded gracefully to an
+OLS-on-donors fallback. The fallback returned a 95% confidence interval of
+**[-1.30, 1.99] when the true effect was 12.0** — excluding truth by a
+factor of six, and with the wrong sign on the lower bound. The `rmspe_ratio`
+of 21 is itself a loud signal that the fit is garbage.
+
+The only trace of any of this in the output is a string in a `notes` list.
+
+This single test is simultaneously proof of three findings above: the silent
+degradation of §2.6, the absent coverage testing of §2.4, and the reason
+"every optional dep degrades gracefully" is the wrong default for an
+*estimator*. Graceful degradation is correct for a report renderer, a plot
+backend, a cache. It is not correct for an inference engine, because **a
+confidently wrong number is worse than no number** — it is the one output a
+user cannot detect as broken.
+
+The second failure is subtler and worth root-causing:
+
+```
+tests/unit/estimators/test_hierarchical.py
+  assert diag["cluster_robust_se"] > diag["naive_se"]
+  assert 0.14350162324283533 > 0.14682146547062208
+```
+
+The test encodes "clustering inflates the standard error." That is the
+common case, not a theorem — cluster-robust SEs can come in below naive ones
+with few clusters or negative within-cluster correlation. Either the
+assertion is wrong (it should test the ICC-implied direction, or hold only
+under a specified DGP) or the cluster-robust computation is. Both readings
+are worth a fix, and only a proper coverage study distinguishes them.
+
+**Practical consequence for the plan.** Phase 1's coverage harness is not a
+speculative nicety; the very first regime it would have covered is failing
+right now, in the repository, silently, behind a `notes` string.
 
 ---
 
